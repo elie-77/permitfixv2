@@ -133,7 +133,7 @@ iframe[title="streamlit_analytics"] { display:none !important; }
     border-bottom: 1px solid #f0f0f0;
     margin-bottom: 0;
 }
-.pf-nav img { height: 30px; width: auto; display: block; }
+.pf-nav img { height: 48px; width: auto; display: block; }
 .pf-nav-right {
     display: flex;
     align-items: center;
