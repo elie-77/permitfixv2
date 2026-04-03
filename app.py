@@ -284,6 +284,16 @@ def send_password_reset(email: str):
     except Exception:
         return False
 
+def send_magic_link(email: str) -> bool:
+    try:
+        get_sb().auth.sign_in_with_otp({
+            "email": email,
+            "options": {"email_redirect_to": "https://app.permitfix.ca"}
+        })
+        return True
+    except Exception:
+        return False
+
 
 # ── Subscription check ────────────────────────────────────────────────────────
 
@@ -354,40 +364,37 @@ def show_login_view():
         </div>
         """, unsafe_allow_html=True)
 
-        # ── Primary CTA: new users ────────────────────────────────────────────
-        st.markdown(
-            "<p style='font-size:0.95rem;color:#1e293b;font-weight:600;"
-            "margin-bottom:0.3rem'>Don't have an account?</p>",
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            "<p style='font-size:0.83rem;color:#64748b;margin-bottom:0.75rem'>"
-            "Get instant access for <strong>$20/submission</strong> or "
-            "<strong>$77/month</strong> unlimited. Your login credentials "
-            "are emailed to you after payment.</p>",
-            unsafe_allow_html=True,
-        )
-        st.link_button(
-            "🏗️  Get Access — Starting at $20",
-            LOVABLE_URL,
-            use_container_width=True,
-            type="primary",
-        )
+        # ── Tab toggle: magic link vs password ───────────────────────────────
+        tab_magic, tab_password = st.tabs(["✉️  Email me a login link", "🔑  Sign in with password"])
 
-        st.markdown(
-            "<p style='text-align:center;font-size:0.78rem;color:#94a3b8;"
-            "margin:0.8rem 0'>── Already have an account? Sign in below ──</p>",
-            unsafe_allow_html=True,
-        )
+        # ── Magic link (primary — what returning subscribers use) ─────────────
+        with tab_magic:
+            st.markdown(
+                "<p style='font-size:0.83rem;color:#64748b;margin:0.5rem 0 0.75rem'>"
+                "Enter your email and we'll send you a secure one-click login link. "
+                "No password needed.</p>",
+                unsafe_allow_html=True,
+            )
+            magic_email = st.text_input("Email", key="magic_email",
+                                        placeholder="you@firm.com")
+            if st.button("Send Login Link", type="primary",
+                         use_container_width=True, key="magic_btn"):
+                if magic_email.strip():
+                    if send_magic_link(magic_email.strip()):
+                        st.success("Link sent! Check your inbox and click it to sign in.")
+                    else:
+                        st.error("Could not send link — is that email registered?")
+                else:
+                    st.warning("Please enter your email address.")
 
-        # ── Secondary: returning customers ────────────────────────────────────
-        with st.container(border=True):
+        # ── Password (fallback) ───────────────────────────────────────────────
+        with tab_password:
             email    = st.text_input("Email", key="login_email",
                                      placeholder="you@firm.com")
             password = st.text_input("Password", key="login_password",
                                      type="password", placeholder="••••••••")
 
-            if st.button("Sign In", use_container_width=True):
+            if st.button("Sign In", use_container_width=True, key="signin_btn"):
                 if email and password:
                     if do_login(email, password):
                         st.session_state.view = "home"
@@ -404,6 +411,20 @@ def show_login_view():
                         st.error("Could not send reset email.")
                 else:
                     st.warning("Enter your email above first.")
+
+        st.divider()
+
+        # ── New user CTA ──────────────────────────────────────────────────────
+        st.markdown(
+            "<p style='font-size:0.83rem;color:#64748b;margin-bottom:0.5rem'>"
+            "Don't have an account yet?</p>",
+            unsafe_allow_html=True,
+        )
+        st.link_button(
+            "Get Access — Starting at $20",
+            LOVABLE_URL,
+            use_container_width=True,
+        )
 
 
 # ── Paywall view ──────────────────────────────────────────────────────────────
