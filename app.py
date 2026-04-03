@@ -12,6 +12,7 @@ import streamlit as st
 import pdfplumber
 from dotenv import load_dotenv
 from supabase import create_client
+from streamlit_cookies_controller import CookieController
 
 load_dotenv()
 
@@ -39,6 +40,10 @@ st.set_page_config(
     page_icon="🏗️",
     layout="wide",
 )
+
+# Must be instantiated at module level so it can read/write browser cookies
+# across page refreshes (session_state alone doesn't survive a browser refresh)
+_cookies = CookieController(key="pf_auth")
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -186,30 +191,56 @@ def get_sb():
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
 def _save_tokens(session):
-    """Persist Supabase tokens in st.session_state so restore_session() can use them."""
-    if session:
-        st.session_state.sb_access_token  = session.access_token
-        st.session_state.sb_refresh_token = session.refresh_token
+    """Write Supabase tokens to browser cookies (survives refresh) + session_state."""
+    if not session:
+        return
+    st.session_state.sb_access_token  = session.access_token
+    st.session_state.sb_refresh_token = session.refresh_token
+    try:
+        from datetime import timedelta
+        _cookies.set("sb_access",  session.access_token,
+                     expires=datetime.now() + timedelta(hours=2))
+        _cookies.set("sb_refresh", session.refresh_token,
+                     expires=datetime.now() + timedelta(days=30))
+    except Exception:
+        pass
+
 
 def restore_session():
-    """On every page load, try to restore a previous Supabase session from stored tokens."""
+    """Restore Supabase session from cookies or session_state (runs on every page load)."""
     if st.session_state.get("sb_user"):
-        return  # already logged in this session
+        return
+
+    # 1. Try session_state (fast, survives reruns within the same tab)
     access  = st.session_state.get("sb_access_token")
-    refresh = st.session_state.get("sb_refresh_token")
+    refresh = st.session_state.get("sb_refresh_token", "")
+
+    # 2. Fall back to browser cookies (survives tab close / browser refresh)
+    if not access:
+        try:
+            access  = _cookies.get("sb_access")
+            refresh = _cookies.get("sb_refresh") or ""
+        except Exception:
+            return
+
     if not access:
         return
+
     try:
         res = get_sb().auth.set_session(access, refresh)
         if res.user:
             st.session_state.sb_user = res.user
-            # Store refreshed tokens (Supabase may have issued new ones)
-            _save_tokens(res.session)
+            _save_tokens(res.session)          # refresh tokens if Supabase issued new ones
             st.session_state.pop("subscription", None)
     except Exception:
-        # Tokens expired or invalid — clear them so login screen shows
-        st.session_state.pop("sb_access_token",  None)
-        st.session_state.pop("sb_refresh_token", None)
+        # Tokens are dead — wipe everything so the login screen shows cleanly
+        for k in ("sb_access_token", "sb_refresh_token"):
+            st.session_state.pop(k, None)
+        try:
+            _cookies.remove("sb_access")
+            _cookies.remove("sb_refresh")
+        except Exception:
+            pass
 
 def do_login(email: str, password: str) -> bool:
     try:
@@ -230,6 +261,11 @@ def do_login(email: str, password: str) -> bool:
 def do_logout():
     try:
         get_sb().auth.sign_out()
+    except Exception:
+        pass
+    try:
+        _cookies.remove("sb_access")
+        _cookies.remove("sb_refresh")
     except Exception:
         pass
     for key in list(st.session_state.keys()):
