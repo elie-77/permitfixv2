@@ -583,15 +583,31 @@ def generate_report_pdf(meta, messages, docs, images) -> bytes:
     from fpdf import FPDF
     import re
 
+    def safe(text: str) -> str:
+        """Drop any character Helvetica can't render (emoji, non-Latin-1)."""
+        return text.encode("latin-1", errors="ignore").decode("latin-1")
+
+    def strip_status_emoji(text: str) -> str:
+        """Replace status emoji prefixes with readable text equivalents."""
+        replacements = {
+            "\U0001f535": "[In Review]",
+            "\U0001f7e1": "[Corrections Needed]",
+            "\U0001f7e2": "[Approved]",
+            "\u26ab":     "[On Hold]",
+        }
+        for emoji, label in replacements.items():
+            text = text.replace(emoji, label)
+        return safe(text)
+
     def clean(text: str) -> str:
-        """Strip markdown for plain-text PDF rendering."""
+        """Strip markdown and non-Latin-1 characters for PDF rendering."""
         text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
         text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
         text = re.sub(r"\*(.+?)\*",   r"\1", text)
         text = re.sub(r"__(.+?)__",   r"\1", text)
         text = re.sub(r"`{1,3}[^`]*`{1,3}", "", text)
         text = re.sub(r"\[(.+?)\]\(.+?\)", r"\1", text)
-        return text
+        return safe(text)
 
     def is_header(line: str) -> bool:
         return re.match(r"^#{1,6}\s+", line) is not None
@@ -636,15 +652,15 @@ def generate_report_pdf(meta, messages, docs, images) -> bytes:
 
     pdf.set_font("Helvetica", "B", 13)
     pdf.set_xy(14, 52)
-    pdf.cell(0, 7, meta.get("name", "Untitled Project"), ln=True)
+    pdf.cell(0, 7, safe(meta.get("name", "Untitled Project")), ln=True)
 
     pdf.set_font("Helvetica", "", 9)
     pdf.set_text_color(100, 116, 139)
     pdf.set_xy(14, 60)
     if meta.get("address"):
-        pdf.cell(60, 5, f"Address: {meta['address']}")
-    pdf.cell(60, 5, f"Status: {meta.get('status', '—')}")
-    pdf.cell(0,  5, f"Created: {meta.get('created', '—')}", ln=True)
+        pdf.cell(60, 5, f"Address: {safe(meta['address'])}")
+    pdf.cell(60, 5, f"Status: {strip_status_emoji(meta.get('status', '-'))}")
+    pdf.cell(0,  5, f"Created: {safe(meta.get('created', '-'))}", ln=True)
 
     n_docs = len(docs)
     n_imgs = len(images)
@@ -693,10 +709,10 @@ def generate_report_pdf(meta, messages, docs, images) -> bytes:
         for d in docs:
             pdf.set_x(14)
             pages = d.get("page_count", "?")
-            pdf.cell(0, 5, f"\u2022  {d['name']}  ({pages} page{'s' if pages != 1 else ''})", ln=True)
+            pdf.cell(0, 5, f"\u2022  {safe(d['name'])}  ({pages} page{'s' if pages != 1 else ''})", ln=True)
         for i in images:
             pdf.set_x(14)
-            pdf.cell(0, 5, f"\u2022  {i['name']}  (image)", ln=True)
+            pdf.cell(0, 5, f"\u2022  {safe(i['name'])}  (image)", ln=True)
         pdf.ln(4)
 
     # ── Compliance analysis ───────────────────────────────────────────────────
