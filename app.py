@@ -54,21 +54,24 @@ _cookies = CookieController(key="pf_auth")
 # Supabase magic links put tokens in the URL hash (#access_token=...)
 # Streamlit can't read hashes server-side, so this JS moves them to
 # query params (?access_token=...) which Streamlit CAN read, then reloads.
+# Also handles error hashes (#error=access_denied etc.)
 st.markdown("""
 <script>
 (function() {
     const hash = window.location.hash;
-    if (hash && hash.includes('access_token')) {
-        const params = new URLSearchParams(hash.replace('#', ''));
-        const access  = params.get('access_token');
-        const refresh = params.get('refresh_token');
-        if (access) {
-            const url = new URL(window.location.href);
-            url.hash = '';
-            url.searchParams.set('access_token',  access);
-            url.searchParams.set('refresh_token', refresh || '');
-            window.location.replace(url.toString());
-        }
+    if (!hash || hash.length < 2) return;
+    const params = new URLSearchParams(hash.replace('#', ''));
+    const access = params.get('access_token');
+    const error  = params.get('error');
+    const url    = new URL(window.location.href);
+    url.hash = '';
+    if (access) {
+        url.searchParams.set('access_token',  access);
+        url.searchParams.set('refresh_token', params.get('refresh_token') || '');
+        window.location.replace(url.toString());
+    } else if (error) {
+        url.searchParams.set('auth_error', params.get('error_description') || error);
+        window.location.replace(url.toString());
     }
 })();
 </script>
@@ -387,6 +390,19 @@ def show_login_view():
           <div class="app-byline">Brought to you by 77Inc</div>
         </div>
         """, unsafe_allow_html=True)
+
+        # ── Show auth errors from magic link (e.g. expired OTP) ──────────────
+        auth_error = st.query_params.get("auth_error", "")
+        if auth_error:
+            st.error(
+                "Your login link has expired or is invalid. "
+                "Please request a new one below.",
+                icon="🔒",
+            )
+            # Clear error from URL so it doesn't persist on refresh
+            p = dict(st.query_params)
+            p.pop("auth_error", None)
+            st.query_params.clear()
 
         # ── Tab toggle: magic link vs password ───────────────────────────────
         tab_magic, tab_password = st.tabs(["✉️  Email me a login link", "🔑  Sign in with password"])
