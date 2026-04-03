@@ -51,31 +51,32 @@ st.set_page_config(
 _cookies = CookieController(key="pf_auth")
 
 # ── Magic link hash fragment handler ─────────────────────────────────────────
-# Supabase magic links put tokens in the URL hash (#access_token=...)
-# Streamlit can't read hashes server-side, so this JS moves them to
-# query params (?access_token=...) which Streamlit CAN read, then reloads.
-# Also handles error hashes (#error=access_denied etc.)
-st.markdown("""
+# Supabase magic links put tokens in URL hash (#access_token=...).
+# Streamlit can't read hashes server-side. st.components.v1.html() runs
+# in an iframe that CAN execute JS — it reads the parent window's hash
+# and reloads with query params that Streamlit CAN read.
+import streamlit.components.v1 as components
+components.html("""
 <script>
 (function() {
-    const hash = window.location.hash;
+    const hash = window.parent.location.hash;
     if (!hash || hash.length < 2) return;
     const params = new URLSearchParams(hash.replace('#', ''));
     const access = params.get('access_token');
     const error  = params.get('error');
-    const url    = new URL(window.location.href);
+    const url    = new URL(window.parent.location.href);
     url.hash = '';
     if (access) {
         url.searchParams.set('access_token',  access);
         url.searchParams.set('refresh_token', params.get('refresh_token') || '');
-        window.location.replace(url.toString());
+        window.parent.location.replace(url.toString());
     } else if (error) {
         url.searchParams.set('auth_error', params.get('error_description') || error);
-        window.location.replace(url.toString());
+        window.parent.location.replace(url.toString());
     }
 })();
 </script>
-""", unsafe_allow_html=True)
+""", height=0)
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
