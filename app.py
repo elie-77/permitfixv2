@@ -1073,8 +1073,10 @@ if not st.session_state.get("sb_user"):
 
         if _authed:
             st.session_state.pop("subscription", None)
-            st.query_params.clear()
-            st.rerun()
+            # Don't clear query_params or call st.rerun() here —
+            # both trigger extra render cycles. The logged-in JS component
+            # below removes the tokens from the URL via replaceState (no reload).
+            # Just fall through and render the app directly on this same pass.
         else:
             # Tokens are completely dead — clear localStorage to stop the loop
             components.html("""
