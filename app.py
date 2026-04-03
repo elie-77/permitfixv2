@@ -841,6 +841,27 @@ def go_home():
 # AUTH GATE
 # ═════════════════════════════════════════════════════════════════════════════
 
+# ── SSO token handoff from Lovable ───────────────────────────────────────────
+# Lovable redirects here with ?access_token=...&refresh_token=... after login.
+# We restore the Supabase session from those tokens, then clear them from the URL.
+if not st.session_state.sb_user:
+    params = st.query_params
+    if "access_token" in params:
+        try:
+            sb  = get_sb()
+            res = sb.auth.set_session(
+                params.get("access_token"),
+                params.get("refresh_token", ""),
+            )
+            if res.user:
+                st.session_state.sb_user = res.user
+                st.session_state.pop("subscription", None)
+                st.query_params.clear()
+                st.rerun()
+        except Exception:
+            # Token invalid or expired — clear and fall through to login screen
+            st.query_params.clear()
+
 if not st.session_state.sb_user:
     show_login_view()
     st.stop()
