@@ -20,7 +20,12 @@ MODEL      = "claude-opus-4-6"
 api_key    = os.getenv("ANTHROPIC_API_KEY", "")
 APP_DIR    = os.path.dirname(__file__)
 
-DATA_DIR   = "/data" if os.path.isdir("/data") else APP_DIR
+# /data = HF Spaces  |  /app/data = Railway volume  |  fallback = local
+DATA_DIR   = (
+    "/data"       if os.path.isdir("/data")      else
+    "/app/data"   if os.path.isdir("/app/data")  else
+    os.path.join(APP_DIR, "local_data")
+)
 MASTER_DIR = os.path.join(DATA_DIR, "master_uploads")
 os.makedirs(MASTER_DIR, exist_ok=True)
 
