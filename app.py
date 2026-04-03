@@ -253,7 +253,7 @@ def _save_tokens(session):
     try:
         from datetime import timedelta
         _cookies.set("sb_access",  session.access_token,
-                     expires=datetime.now() + timedelta(hours=2))
+                     expires=datetime.now() + timedelta(days=7))
         _cookies.set("sb_refresh", session.refresh_token,
                      expires=datetime.now() + timedelta(days=30))
     except Exception:
@@ -286,16 +286,36 @@ def restore_session():
     if not access:
         return
 
+    # ── Try to restore with existing access token first ──────────────────────
+    session_ok = False
     try:
         res = get_sb().auth.set_session(access, refresh)
         if res.user:
-            st.session_state.sb_user      = res.user
+            st.session_state.sb_user          = res.user
             st.session_state.sb_access_token  = res.session.access_token
             st.session_state.sb_refresh_token = res.session.refresh_token
             _save_tokens(res.session)
             st.session_state.pop("subscription", None)
+            session_ok = True
     except Exception:
-        # Tokens are dead — wipe so login screen shows cleanly
+        pass
+
+    # ── If access token expired, try refreshing with the refresh token ────────
+    if not session_ok and refresh:
+        try:
+            res = get_sb().auth.refresh_session(refresh)
+            if res.user:
+                st.session_state.sb_user          = res.user
+                st.session_state.sb_access_token  = res.session.access_token
+                st.session_state.sb_refresh_token = res.session.refresh_token
+                _save_tokens(res.session)
+                st.session_state.pop("subscription", None)
+                session_ok = True
+        except Exception:
+            pass
+
+    # ── Both failed — tokens are dead, wipe and show login ───────────────────
+    if not session_ok:
         for k in ("sb_access_token", "sb_refresh_token"):
             st.session_state.pop(k, None)
         try:
