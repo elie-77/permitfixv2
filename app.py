@@ -50,6 +50,30 @@ st.set_page_config(
 # across page refreshes (session_state alone doesn't survive a browser refresh)
 _cookies = CookieController(key="pf_auth")
 
+# ── Magic link hash fragment handler ─────────────────────────────────────────
+# Supabase magic links put tokens in the URL hash (#access_token=...)
+# Streamlit can't read hashes server-side, so this JS moves them to
+# query params (?access_token=...) which Streamlit CAN read, then reloads.
+st.markdown("""
+<script>
+(function() {
+    const hash = window.location.hash;
+    if (hash && hash.includes('access_token')) {
+        const params = new URLSearchParams(hash.replace('#', ''));
+        const access  = params.get('access_token');
+        const refresh = params.get('refresh_token');
+        if (access) {
+            const url = new URL(window.location.href);
+            url.hash = '';
+            url.searchParams.set('access_token',  access);
+            url.searchParams.set('refresh_token', refresh || '');
+            window.location.replace(url.toString());
+        }
+    }
+})();
+</script>
+""", unsafe_allow_html=True)
+
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
