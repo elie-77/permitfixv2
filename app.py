@@ -1032,28 +1032,42 @@ else:
             save_meta(meta)
     with col_pdf:
         has_analysis = any(m["role"] == "assistant" for m in st.session_state.messages)
-        if has_analysis:
-            try:
-                pdf_bytes = generate_report_pdf(
-                    meta,
-                    st.session_state.messages,
-                    st.session_state.docs,
-                    st.session_state.images,
-                )
-                safe_name = meta["name"].replace(" ", "_")[:40]
-                st.download_button(
-                    label="⬇ Report PDF",
-                    data=pdf_bytes,
-                    file_name=f"PermitFix_{safe_name}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True,
-                    type="primary",
-                )
-            except Exception as e:
-                st.caption(f"PDF error: {e}")
-        else:
+        # Cache key: includes message count so stale PDFs are never shown
+        # after new analysis messages arrive
+        pdf_cache_key = f"pdf_{pid}_{len(st.session_state.messages)}"
+
+        if not has_analysis:
+            # No analysis yet — greyed out
             st.button("⬇ Report PDF", disabled=True, use_container_width=True,
                       help="Run an analysis first to generate a report.")
+
+        elif pdf_cache_key in st.session_state:
+            # PDF already built for this exact conversation state — show download
+            safe_name = meta["name"].replace(" ", "_")[:40]
+            st.download_button(
+                label="⬇ Download PDF",
+                data=st.session_state[pdf_cache_key],
+                file_name=f"PermitFix_{safe_name}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary",
+            )
+
+        else:
+            # PDF not yet built — show generate button
+            if st.button("📄 Build Report", type="primary", use_container_width=True,
+                         help="Generate a downloadable PDF of this analysis."):
+                with st.spinner("Building PDF report…"):
+                    try:
+                        st.session_state[pdf_cache_key] = generate_report_pdf(
+                            meta,
+                            st.session_state.messages,
+                            st.session_state.docs,
+                            st.session_state.images,
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not generate PDF: {e}")
 
     st.divider()
 
