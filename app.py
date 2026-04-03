@@ -780,7 +780,7 @@ def generate_report_pdf(meta, messages, docs, images) -> bytes:
                 if is_header(stripped):
                     pdf.set_font("Helvetica", "B", 10)
                     pdf.set_x(10)
-                    pdf.multi_cell(190, 5, header_text(stripped))
+                    pdf.multi_cell(190, 5, safe(header_text(stripped)))
                     pdf.ln(1)
                 elif is_bullet(stripped):
                     pdf.set_font("Helvetica", "", 9)
