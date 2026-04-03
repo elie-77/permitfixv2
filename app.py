@@ -1190,8 +1190,11 @@ if st.session_state.view == "home":
 # ═════════════════════════════════════════════════════════════════════════════
 
 else:
-    pid  = st.session_state.current_pid
-    # Guard: if project no longer exists on disk, go home gracefully
+    pid = st.session_state.current_pid
+    # Guard: pid is None or project no longer exists on disk
+    if not pid:
+        go_home()
+        st.rerun()
     try:
         meta = load_meta(pid)
     except Exception:
