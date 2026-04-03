@@ -42,6 +42,12 @@ STATUSES = ["🔵 In Review", "🟡 Corrections Needed", "🟢 Approved", "⚫ O
 from PIL import Image as _PILImage
 _icon = _PILImage.open(os.path.join(APP_DIR, "icon.png"))
 
+def _b64_img(filename):
+    with open(os.path.join(APP_DIR, filename), "rb") as _f:
+        return base64.b64encode(_f.read()).decode()
+
+_LOGO_B64 = _b64_img("logo.png")
+
 st.set_page_config(
     page_title="Ontario AI Permit Check",
     page_icon=_icon,
@@ -102,147 +108,182 @@ components.html("""
 st.markdown("""
 <style>
 /* ── Hide all Streamlit chrome ── */
-[data-testid="stHeader"],
-[data-testid="stToolbar"],
-[data-testid="stDecoration"],
-[data-testid="stStatusWidget"],
-[data-testid="stToolbarActions"],
-[data-testid="stBaseButton-header"],
-[data-testid="InputInstructions"],
-[data-testid="stSidebar"],
-#MainMenu, footer,
-.stDeployButton,
-button[kind="header"]                { display: none !important; }
-/* Running man / stop button (Streamlit 1.40+) */
-[data-testid="stAppRunningMan"]      { display: none !important; }
-iframe[title="streamlit_analytics"]  { display: none !important; }
-/* Loading spinner overlay */
-.stSpinner > div                     { border-top-color: #1b5e40 !important; }
+[data-testid="stHeader"],[data-testid="stToolbar"],[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],[data-testid="stToolbarActions"],
+[data-testid="stBaseButton-header"],[data-testid="InputInstructions"],
+[data-testid="stSidebar"],[data-testid="stAppRunningMan"],
+#MainMenu,footer,.stDeployButton,button[kind="header"],
+iframe[title="streamlit_analytics"] { display:none !important; }
+.stSpinner > div { border-top-color: #1a5e40 !important; }
 
+/* ── Layout ── */
 .block-container {
-    padding: 1.8rem 2.5rem !important;
-    max-width: 900px !important;
+    padding: 0 2.5rem 2rem !important;
+    max-width: 1100px !important;
+}
+@media (max-width: 768px) {
+    .block-container { padding: 0 1rem 1.5rem !important; }
 }
 
-/* App header */
-.app-header {
-    background: linear-gradient(135deg, #0f2942 0%, #1b5e40 100%);
-    color: white;
-    padding: 1.4rem 1.8rem;
-    border-radius: 14px;
-    margin-bottom: 1.8rem;
+/* ── Top nav ── */
+.pf-nav {
     display: flex;
-    justify-content: space-between;
-    align-items: flex-end;
+    align-items: center;
+    padding: 1rem 0 0.9rem;
+    border-bottom: 1px solid #f0f0f0;
+    margin-bottom: 0;
 }
-.app-title    { font-size: 1.55rem; font-weight: 700; margin: 0; letter-spacing: -0.3px; }
-.app-subtitle { font-size: 0.78rem; opacity: 0.65; margin-top: 0.25rem; }
-.app-byline   { font-size: 0.72rem; opacity: 0.55; text-align: right; }
+.pf-nav img { height: 30px; width: auto; display: block; }
+.pf-nav-right {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
 
-/* Section labels */
-.section-label {
-    color: #64748b;
-    font-size: 0.74rem;
+/* ── Plan badges ── */
+.plan-badge {
+    display: inline-block;
+    padding: 0.2rem 0.65rem;
+    border-radius: 20px;
+    font-size: 0.7rem;
     font-weight: 600;
+}
+.plan-monthly { background: #dcfce7; color: #15803d; }
+.plan-credits { background: #dbeafe; color: #1d4ed8; }
+.plan-none    { background: #fee2e2; color: #dc2626; }
+
+/* ── Page sections ── */
+.pf-section-title {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: #111827;
+    margin: 1.75rem 0 1rem;
+    letter-spacing: -0.3px;
+}
+.section-label {
+    font-size: 0.72rem;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    margin-bottom: 0.6rem;
+    letter-spacing: 0.08em;
+    color: #9ca3af;
+    margin-bottom: 0.75rem;
 }
 
-/* Project cards */
+/* ── Project cards ── */
 .proj-card {
-    background: white;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
-    padding: 1rem 1.25rem;
-    margin-bottom: 0.55rem;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    transition: box-shadow 0.15s;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 14px;
+    padding: 1.1rem 1.4rem;
+    margin-bottom: 0.6rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    transition: box-shadow 0.15s, border-color 0.15s;
 }
-.proj-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.09); }
-.proj-name    { font-size: 1rem; font-weight: 600; color: #1e293b; margin: 0; }
-.proj-meta    { font-size: 0.78rem; color: #94a3b8; margin-top: 0.15rem; }
+.proj-card:hover {
+    box-shadow: 0 6px 20px rgba(0,0,0,0.08);
+    border-color: #1a5e40;
+}
+.proj-name { font-size: 0.97rem; font-weight: 600; color: #111827; margin: 0 0 0.25rem; }
+.proj-meta { font-size: 0.78rem; color: #6b7280; margin: 0; line-height: 1.6; }
+.proj-addr { font-size: 0.78rem; color: #9ca3af; margin-top: 0.2rem; }
 
-/* Buttons */
+/* ── Project view ── */
+.pf-project-title {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: #111827;
+    margin: 0 0 0.15rem;
+    letter-spacing: -0.3px;
+}
+.pf-project-addr { font-size: 0.82rem; color: #9ca3af; }
+
+/* ── Buttons ── */
 .stButton > button {
     border-radius: 8px !important;
     font-weight: 500 !important;
     font-size: 0.875rem !important;
     transition: all 0.15s !important;
+    border: 1.5px solid #e5e7eb !important;
 }
 .stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, #0f2942, #1b5e40) !important;
-    border: none !important;
-    color: white !important;
+    background: #1a5e40 !important;
+    border-color: #1a5e40 !important;
+    color: #fff !important;
 }
 .stButton > button[kind="primary"]:hover {
-    opacity: 0.92 !important;
+    background: #155233 !important;
+    border-color: #155233 !important;
     transform: translateY(-1px) !important;
+    box-shadow: 0 4px 12px rgba(26,94,64,0.25) !important;
+}
+.stButton > button:not([kind="primary"]):hover {
+    border-color: #1a5e40 !important;
+    color: #1a5e40 !important;
 }
 
-/* File pills */
+/* ── File pills ── */
 .file-pills { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.75rem; }
 .file-pill {
     display: inline-flex; align-items: center; gap: 0.3rem;
-    background: #f1f5f9; border: 1px solid #e2e8f0;
-    border-radius: 20px; padding: 0.25rem 0.65rem;
-    font-size: 0.78rem; color: #475569;
+    background: #f9fafb; border: 1px solid #e5e7eb;
+    border-radius: 20px; padding: 0.22rem 0.6rem;
+    font-size: 0.77rem; color: #6b7280;
 }
 
-/* Attach expander */
+/* ── Attach expander ── */
 [data-testid="stExpander"] > div:first-child {
     border-radius: 10px !important;
-    border: 1.5px dashed #cbd5e1 !important;
-    background: #f8fafc !important;
+    border: 1.5px dashed #d1d5db !important;
+    background: #f9fafb !important;
 }
 
-/* Chat input */
+/* ── Chat ── */
 [data-testid="stChatInput"] textarea {
     border-radius: 12px !important;
-    border: 1.5px solid #e2e8f0 !important;
+    border: 1.5px solid #e5e7eb !important;
     font-size: 0.9rem !important;
 }
 [data-testid="stChatInput"] textarea:focus {
-    border-color: #1b5e40 !important;
-    box-shadow: 0 0 0 3px rgba(27,94,64,0.12) !important;
+    border-color: #1a5e40 !important;
+    box-shadow: 0 0 0 3px rgba(26,94,64,0.1) !important;
+}
+[data-testid="stChatMessage"] { padding: 0.35rem 0 !important; }
+
+/* ── Dividers ── */
+hr { border-color: #f3f4f6 !important; margin: 1.25rem 0 !important; }
+
+/* ── Empty state ── */
+.pf-empty {
+    text-align: center;
+    padding: 3rem 2rem;
+    background: #fafafa;
+    border: 1.5px dashed #e5e7eb;
+    border-radius: 16px;
+    color: #9ca3af;
+    font-size: 0.9rem;
+    margin-top: 0.5rem;
+}
+.pf-empty strong { color: #6b7280; }
+
+/* ── Login card ── */
+.login-card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 20px;
+    padding: 2rem 2rem 2.25rem;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.06);
+    margin-top: 0.5rem;
 }
 
-/* Chat messages */
-[data-testid="stChatMessage"] { padding: 0.4rem 0 !important; }
-
-/* Divider */
-hr { border-color: #e2e8f0 !important; margin: 1.2rem 0 !important; }
-
-/* Footer */
+/* ── Footer ── */
 .footer {
     text-align: center;
-    color: #94a3b8;
-    font-size: 0.74rem;
-    margin-top: 2.5rem;
-    padding-top: 0.8rem;
-    border-top: 1px solid #e2e8f0;
+    color: #d1d5db;
+    font-size: 0.72rem;
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid #f3f4f6;
 }
-
-/* User bar */
-.user-bar {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: 0.78rem;
-    color: #64748b;
-    margin-bottom: 0.5rem;
-    justify-content: flex-end;
-}
-.plan-badge {
-    display: inline-block;
-    padding: 0.15rem 0.5rem;
-    border-radius: 20px;
-    font-size: 0.7rem;
-    font-weight: 600;
-}
-.plan-monthly { background: #dcfce7; color: #166534; }
-.plan-credits { background: #dbeafe; color: #1e40af; }
-.plan-none    { background: #fee2e2; color: #991b1b; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -372,24 +413,21 @@ def deduct_submission():
 # ── Login view ────────────────────────────────────────────────────────────────
 
 def show_login_view():
-    _, col, _ = st.columns([1, 1.4, 1])
+    st.markdown("<div style='height:2rem'></div>", unsafe_allow_html=True)
+    _, col, _ = st.columns([1, 1.2, 1])
     with col:
-        # Logo
-        _logo = _PILImage.open(os.path.join(APP_DIR, "logo.png"))
-        st.image(_logo, use_container_width=True)
         st.markdown(
-            "<p style='text-align:center;font-size:0.8rem;color:#94a3b8;"
-            "margin:-0.5rem 0 1.2rem'>Ontario Building Code compliance — Beta</p>",
+            f'<div style="text-align:center;margin-bottom:1.5rem">'
+            f'<img src="data:image/png;base64,{_LOGO_B64}" '
+            f'style="height:40px;width:auto"></div>',
             unsafe_allow_html=True,
         )
+        st.markdown("<div class='login-card'>", unsafe_allow_html=True)
 
         auth_error = st.query_params.get("auth_error", "")
         if auth_error:
             st.query_params.clear()
-            st.error(
-                "Your login link has expired or is no longer valid.",
-                icon="🔒",
-            )
+            st.error("Your login link has expired or is no longer valid.", icon="🔒")
             st.link_button(
                 "Get a new login link →",
                 LOVABLE_URL + "/login",
@@ -397,16 +435,11 @@ def show_login_view():
                 type="primary",
             )
         else:
-            # Waiting for magic link token — send them to Lovable to log in
             st.markdown(
-                "<p style='font-size:1rem;font-weight:600;margin-bottom:0.25rem'>"
-                "Sign in to your account</p>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                "<p style='font-size:0.83rem;color:#64748b;margin-bottom:1rem'>"
-                "Use your login link from your email, or visit the link below "
-                "to request a new one.</p>",
+                "<p style='font-size:1.05rem;font-weight:700;color:#111827;"
+                "margin:0 0 0.3rem'>Welcome back</p>"
+                "<p style='font-size:0.83rem;color:#6b7280;margin:0 0 1.25rem'>"
+                "Sign in with the magic link from your email, or request a new one below.</p>",
                 unsafe_allow_html=True,
             )
             st.link_button(
@@ -415,10 +448,9 @@ def show_login_view():
                 use_container_width=True,
                 type="primary",
             )
-            st.divider()
             st.markdown(
-                "<p style='font-size:0.83rem;color:#64748b;margin-bottom:0.5rem'>"
-                "Don't have an account yet?</p>",
+                "<div style='text-align:center;margin:1rem 0 0.75rem;"
+                "font-size:0.78rem;color:#9ca3af'>— or —</div>",
                 unsafe_allow_html=True,
             )
             st.link_button(
@@ -426,6 +458,12 @@ def show_login_view():
                 LOVABLE_URL,
                 use_container_width=True,
             )
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='text-align:center;font-size:0.72rem;color:#d1d5db;margin-top:1rem'>"
+            "Ontario Building Code compliance — Beta · PermitFix by 77Inc</p>",
+            unsafe_allow_html=True,
+        )
 
 
 # ── Paywall view ──────────────────────────────────────────────────────────────
@@ -435,15 +473,16 @@ def show_paywall_view():
     user       = st.session_state.sb_user
     user_email = user.email if user else ""
 
+    st.markdown("<div style='height:2rem'></div>", unsafe_allow_html=True)
     _, col, _ = st.columns([1, 1.4, 1])
     with col:
-        _logo = _PILImage.open(os.path.join(APP_DIR, "logo.png"))
-        st.image(_logo, use_container_width=True)
         st.markdown(
-            "<p style='text-align:center;font-size:0.8rem;color:#94a3b8;"
-            "margin:-0.5rem 0 1.2rem'>Ontario Building Code compliance — Beta</p>",
+            f'<div style="text-align:center;margin-bottom:1.5rem">'
+            f'<img src="data:image/png;base64,{_LOGO_B64}" '
+            f'style="height:40px;width:auto"></div>',
             unsafe_allow_html=True,
         )
+        st.markdown("<div class='login-card'>", unsafe_allow_html=True)
 
         # Status message
         if sub.get("plan_type") == "per_submission" and \
@@ -494,9 +533,11 @@ def show_paywall_view():
         st.link_button("Get Access →", LOVABLE_URL,
                        type="primary", use_container_width=True)
 
-        if st.button("Log out", key="paywall_logout"):
+        st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+        if st.button("Log out", key="paywall_logout", use_container_width=True):
             do_logout()
             st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ── User namespace (Supabase user ID → filesystem namespace) ──────────────────
@@ -1098,20 +1139,9 @@ if not has_access():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# AUTHENTICATED — shared header
+# AUTHENTICATED — nav bar
 # ═════════════════════════════════════════════════════════════════════════════
 
-st.markdown("""
-<div class="app-header">
-  <div>
-    <div class="app-title">🏗️ Ontario AI Permit PreChecker</div>
-    <div class="app-subtitle">Ontario Building Code compliance analysis — Beta</div>
-  </div>
-  <div class="app-byline">Brought to you by 77Inc</div>
-</div>
-""", unsafe_allow_html=True)
-
-# User bar: email, plan badge, logout
 sub        = get_subscription()
 user_email = st.session_state.sb_user.email
 
@@ -1126,18 +1156,38 @@ else:
     badge_cls  = "plan-none"
     badge_text = "No active plan"
 
-col_email, col_badge, col_logout = st.columns([5, 2, 1])
-with col_email:
-    st.caption(f"Signed in as **{user_email}**")
-with col_badge:
+# Nav: logo left | badge + email + logout right
+nav_logo, nav_gap, nav_user = st.columns([3, 4, 3])
+with nav_logo:
     st.markdown(
-        f'<span class="plan-badge {badge_cls}">{badge_text}</span>',
+        f'<div class="pf-nav">'
+        f'<img src="data:image/png;base64,{_LOGO_B64}" alt="PermitFix">'
+        f'</div>',
         unsafe_allow_html=True,
     )
-with col_logout:
-    if st.button("Log out", key="header_logout"):
-        do_logout()
-        st.rerun()
+with nav_user:
+    st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
+    nu1, nu2, nu3 = st.columns([3, 2.5, 1.5])
+    with nu1:
+        st.markdown(
+            f"<div style='font-size:0.78rem;color:#6b7280;padding-top:0.45rem;"
+            f"text-align:right;white-space:nowrap;overflow:hidden;"
+            f"text-overflow:ellipsis'>{user_email}</div>",
+            unsafe_allow_html=True,
+        )
+    with nu2:
+        st.markdown(
+            f"<div style='padding-top:0.35rem;text-align:center'>"
+            f"<span class='plan-badge {badge_cls}'>{badge_text}</span></div>",
+            unsafe_allow_html=True,
+        )
+    with nu3:
+        if st.button("Log out", key="header_logout"):
+            do_logout()
+            st.rerun()
+
+st.markdown("<div style='border-bottom:1px solid #f0f0f0;margin-bottom:0'></div>",
+            unsafe_allow_html=True)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1148,9 +1198,10 @@ if st.session_state.view == "home":
 
     col_lbl, col_btn = st.columns([5, 1])
     with col_lbl:
-        st.markdown('<div class="section-label">Your Projects</div>',
+        st.markdown('<div class="pf-section-title">Your Projects</div>',
                     unsafe_allow_html=True)
     with col_btn:
+        st.markdown("<div style='margin-top:1.75rem'></div>", unsafe_allow_html=True)
         if st.button("＋ New", type="primary", use_container_width=True):
             st.session_state.creating = True
 
@@ -1207,45 +1258,52 @@ if st.session_state.view == "home":
     projects = load_all_projects()
     if not projects:
         st.markdown(
-            "<p style='color:#94a3b8;font-size:0.9rem;margin-top:0.5rem'>"
-            "No projects yet — click <strong>＋ New</strong> to get started.</p>",
+            "<div class='pf-empty'>"
+            "No projects yet.<br><strong>Click ＋ New to start your first compliance check.</strong>"
+            "</div>",
             unsafe_allow_html=True,
         )
     else:
         for p in projects:
             fd      = files_dir(p["id"])
             n_files = len(os.listdir(fd)) if os.path.isdir(fd) else 0
-            col_info, col_open, col_del = st.columns([5, 1, 1])
+            status  = p.get("status", "")
+            addr    = p.get("address", "")
+            mod     = p.get("modified", "—")
+            col_info, col_open, col_del = st.columns([6, 1, 0.6])
             with col_info:
+                addr_html = (
+                    f'<div class="proj-addr">📍 {addr}</div>' if addr else ""
+                )
                 st.markdown(
                     f'<div class="proj-card">'
                     f'<p class="proj-name">{p["name"]}</p>'
-                    f'<p class="proj-meta">'
-                    f'{p.get("status","")} &nbsp;·&nbsp; '
-                    f'{n_files} file(s) &nbsp;·&nbsp; '
-                    f'Modified {p.get("modified","—")}'
-                    + (f'<br>📍 {p["address"]}' if p.get("address") else "")
-                    + '</p></div>',
+                    f'<p class="proj-meta">{status}'
+                    f'&nbsp;&nbsp;·&nbsp;&nbsp;{n_files} file{"s" if n_files != 1 else ""}'
+                    f'&nbsp;&nbsp;·&nbsp;&nbsp;Updated {mod}</p>'
+                    f'{addr_html}</div>',
                     unsafe_allow_html=True,
                 )
             with col_open:
-                st.write("")
-                if st.button("Open", key=f"open_{p['id']}",
+                st.markdown("<div style='margin-top:0.85rem'></div>",
+                            unsafe_allow_html=True)
+                if st.button("Open →", key=f"open_{p['id']}",
                              type="primary", use_container_width=True):
                     open_project(p["id"])
                     st.rerun()
             with col_del:
-                st.write("")
-                if st.button("🗑️", key=f"del_{p['id']}",
+                st.markdown("<div style='margin-top:0.85rem'></div>",
+                            unsafe_allow_html=True)
+                if st.button("🗑", key=f"del_{p['id']}",
                              help="Delete project", use_container_width=True):
                     delete_project(p["id"])
                     st.rerun()
 
     if not api_key or api_key == "your_api_key_here":
-        st.error("⚠️ Set ANTHROPIC_API_KEY in your HF Space secrets to enable AI analysis.")
+        st.error("Set ANTHROPIC_API_KEY in Railway environment variables.")
 
     st.markdown(
-        '<div class="footer">Ontario AI Permit PreChecker · Brought to you by 77Inc</div>',
+        '<div class="footer">PermitFix · Ontario AI Permit Check · Brought to you by 77Inc</div>',
         unsafe_allow_html=True,
     )
 
@@ -1268,13 +1326,21 @@ else:
 
     col_back, col_title, col_status, col_pdf = st.columns([1, 4, 2, 1.5])
     with col_back:
+        st.markdown("<div style='margin-top:1.1rem'></div>", unsafe_allow_html=True)
         if st.button("← Projects"):
             go_home()
             st.rerun()
     with col_title:
-        st.markdown(f"### {meta['name']}")
-        if meta.get("address"):
-            st.caption(f"📍 {meta['address']}")
+        addr_line = (
+            f'<div class="pf-project-addr">📍 {meta["address"]}</div>'
+            if meta.get("address") else ""
+        )
+        st.markdown(
+            f'<div style="padding-top:0.6rem">'
+            f'<div class="pf-project-title">{meta["name"]}</div>'
+            f'{addr_line}</div>',
+            unsafe_allow_html=True,
+        )
     with col_status:
         new_status = st.selectbox(
             "Status", STATUSES,
@@ -1444,6 +1510,6 @@ else:
         st.rerun()
 
     st.markdown(
-        '<div class="footer">Ontario AI Permit PreChecker · Brought to you by 77Inc</div>',
+        '<div class="footer">PermitFix · Ontario AI Permit Check · Brought to you by 77Inc</div>',
         unsafe_allow_html=True,
     )
