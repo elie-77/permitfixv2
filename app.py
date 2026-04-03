@@ -606,229 +606,273 @@ def build_api_messages(chat_messages, images):
     ] + chat_messages
 
 def generate_report_pdf(meta, messages, docs, images) -> bytes:
-    """Build a formatted PDF compliance report and return as bytes."""
+    """Build a colour-coded PDF compliance report and return as bytes."""
     from fpdf import FPDF
     import re
 
+    # ── Text helpers ──────────────────────────────────────────────────────────
     def safe(text: str) -> str:
-        """Drop any character Helvetica can't render (emoji, non-Latin-1)."""
-        return text.encode("latin-1", errors="ignore").decode("latin-1")
-
-    def strip_status_emoji(text: str) -> str:
-        """Replace status emoji prefixes with readable text equivalents."""
-        replacements = {
-            "\U0001f535": "[In Review]",
-            "\U0001f7e1": "[Corrections Needed]",
-            "\U0001f7e2": "[Approved]",
-            "\u26ab":     "[On Hold]",
-        }
-        for emoji, label in replacements.items():
-            text = text.replace(emoji, label)
-        return safe(text)
+        return str(text).encode("latin-1", errors="ignore").decode("latin-1")
 
     def clean(text: str) -> str:
-        """Strip markdown and non-Latin-1 characters for PDF rendering."""
         text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
         text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
-        text = re.sub(r"\*(.+?)\*",   r"\1", text)
-        text = re.sub(r"__(.+?)__",   r"\1", text)
+        text = re.sub(r"\*(.+?)\*",     r"\1", text)
+        text = re.sub(r"__(.+?)__",     r"\1", text)
         text = re.sub(r"`{1,3}[^`]*`{1,3}", "", text)
         text = re.sub(r"\[(.+?)\]\(.+?\)", r"\1", text)
         return safe(text)
 
-    def is_header(line: str) -> bool:
-        return re.match(r"^#{1,6}\s+", line) is not None
+    def hdr(line: str) -> str:
+        return safe(re.sub(r"^#{1,6}\s+", "", line).strip())
 
-    def header_text(line: str) -> str:
-        return re.sub(r"^#{1,6}\s+", "", line).strip()
+    def is_md_header(line: str) -> bool:
+        return bool(re.match(r"^#{1,6}\s+", line))
 
     def is_bullet(line: str) -> bool:
-        return re.match(r"^\s*[-*•]\s+", line) is not None
+        return bool(re.match(r"^\s*[-*]\s+", line))
 
-    def bullet_text(line: str) -> str:
-        return re.sub(r"^\s*[-*•]\s+", "", line).strip()
+    def bullet_body(line: str) -> str:
+        return clean(re.sub(r"^\s*[-*]\s+", "", line))
 
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=18)
-    pdf.add_page()
+    # ── Compliance classifier ─────────────────────────────────────────────────
+    CRITICAL = [
+        "non-compliant", "not compliant", "does not comply", "does not meet",
+        "violation", "violates", "action required", "must be corrected",
+        "fails to", "not permitted", "exceeds maximum", "below minimum",
+        "insufficient", "deficient", "missing required", "inadequate",
+        "not acceptable", "not allowed",
+    ]
+    GOOD = [
+        "compliant", "meets requirement", "satisfies", "no issue",
+        "no violation", "conforms", "within the required", "no deficien",
+        "acceptable", "adequate", "passes", "appears to meet",
+    ]
+    WARN = [
+        "review", "verify", "unclear", "consider", "may not", "recommend",
+        "suggest", "should ensure", "confirm", "cannot verify", "unable to",
+        "potential", "could", "needs clarification",
+    ]
 
-    # ── Cover header bar ─────────────────────────────────────────────────────
-    pdf.set_fill_color(15, 41, 66)          # dark blue
-    pdf.rect(0, 0, 220, 38, "F")
-    pdf.set_fill_color(27, 94, 64)          # green accent strip
-    pdf.rect(0, 36, 220, 4, "F")
+    PALETTE = {
+        # status: (header_fill_rgb, content_bg_rgb, badge_text)
+        "good":     ((22, 101, 52),   (240, 253, 244), "COMPLIANT"),
+        "warning":  ((146, 64, 14),   (255, 251, 235), "REVIEW REQUIRED"),
+        "critical": ((153, 27, 27),   (254, 242, 242), "ACTION REQUIRED"),
+        "neutral":  ((30, 58, 138),   (239, 246, 255), "NOTE"),
+    }
 
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font("Helvetica", "B", 20)
-    pdf.set_xy(12, 8)
-    pdf.cell(0, 9, "PermitFix AI", ln=True)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.set_xy(12, 19)
-    pdf.cell(0, 7, "Ontario Building Code Compliance Report", ln=True)
-    pdf.set_xy(12, 28)
-    pdf.set_font("Helvetica", "", 8)
-    pdf.cell(0, 6, f"Generated {datetime.now().strftime('%B %d, %Y  %H:%M')}", ln=True)
+    def classify(header_str: str, body_str: str) -> str:
+        t = (header_str + " " + body_str[:600]).lower()
+        if any(k in t for k in CRITICAL): return "critical"
+        if any(k in t for k in GOOD):     return "good"
+        if any(k in t for k in WARN):     return "warning"
+        return "neutral"
 
-    pdf.set_text_color(30, 41, 59)
-    pdf.set_xy(10, 48)
+    def parse_sections(text: str):
+        """Return list of (header|None, [body lines])."""
+        sections, cur_hdr, cur_body = [], None, []
+        for line in text.split("\n"):
+            if is_md_header(line):
+                if cur_hdr is not None or cur_body:
+                    sections.append((cur_hdr, cur_body))
+                cur_hdr, cur_body = hdr(line), []
+            else:
+                cur_body.append(line)
+        if cur_hdr is not None or cur_body:
+            sections.append((cur_hdr, cur_body))
+        return sections
 
-    # ── Project info box ──────────────────────────────────────────────────────
-    pdf.set_fill_color(248, 250, 252)
-    pdf.set_draw_color(226, 232, 240)
-    pdf.rect(10, 48, 190, 34, "FD")
+    # ── Section renderer ──────────────────────────────────────────────────────
+    def render_section(pdf, title, body_lines, status):
+        (hr, hg, hb), (br, bg, bb), badge = PALETTE[status]
 
-    pdf.set_font("Helvetica", "B", 13)
-    pdf.set_xy(14, 52)
-    pdf.cell(0, 7, safe(meta.get("name", "Untitled Project")), ln=True)
-
-    pdf.set_font("Helvetica", "", 9)
-    pdf.set_text_color(100, 116, 139)
-    pdf.set_xy(14, 60)
-    if meta.get("address"):
-        pdf.cell(60, 5, f"Address: {safe(meta['address'])}")
-    pdf.cell(60, 5, f"Status: {strip_status_emoji(meta.get('status', '-'))}")
-    pdf.cell(0,  5, f"Created: {safe(meta.get('created', '-'))}", ln=True)
-
-    n_docs = len(docs)
-    n_imgs = len(images)
-    pdf.set_xy(14, 67)
-    pdf.cell(0, 5,
-             f"Documents reviewed: {n_docs} PDF{'s' if n_docs != 1 else ''}  ·  "
-             f"{n_imgs} image{'s' if n_imgs != 1 else ''}", ln=True)
-
-    pdf.set_text_color(30, 41, 59)
-    pdf.ln(5)
-
-    # ── Prominent "how to use this report" warning ────────────────────────────
-    pdf.set_fill_color(239, 246, 255)       # light blue background
-    pdf.set_draw_color(59, 130, 246)        # blue border
-    pdf.set_x(10)
-    pdf.set_font("Helvetica", "B", 9)
-    pdf.set_text_color(30, 64, 175)
-    pdf.cell(190, 6, "  [!]  HOW TO USE THIS REPORT -- PLEASE READ BEFORE PROCEEDING",
-             ln=True, fill=True, border=1)
-    pdf.set_font("Helvetica", "", 8.5)
-    pdf.set_text_color(30, 41, 59)
-    pdf.set_x(10)
-    pdf.multi_cell(190, 5,
-        "This report identifies potential issues with your permit drawings based on the Ontario Building "
-        "Code. It tells you WHAT may need to change -- it does NOT make those changes for you.\n\n"
-        "You must review each flagged item and update your drawings, specifications, and documents "
-        "accordingly before resubmitting. Do not submit this report to a building department -- "
-        "it is a working reference for your own revisions.\n\n"
-        "AI systems can and do make mistakes. Items flagged here may not all be actual violations, "
-        "and there may be issues not caught by this review. Always have your final drawings reviewed "
-        "by a licensed architect, engineer, or qualified building professional before submission.",
-        fill=True, border=1)
-    pdf.ln(5)
-
-    # ── Files reviewed ────────────────────────────────────────────────────────
-    if docs or images:
-        pdf.set_font("Helvetica", "B", 11)
-        pdf.set_fill_color(15, 41, 66)
+        # Coloured header bar
+        pdf.set_fill_color(hr, hg, hb)
         pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Helvetica", "B", 9)
         pdf.set_x(10)
-        pdf.cell(190, 7, "  Files Reviewed", ln=True, fill=True)
-        pdf.set_text_color(30, 41, 59)
-        pdf.set_font("Helvetica", "", 9)
-        pdf.ln(2)
+        label = f"  {badge}"
+        if title:
+            label += f"  |  {safe(title)}"
+        pdf.cell(190, 7, label, fill=True, ln=True)
 
-        for d in docs:
-            pdf.set_x(14)
-            pages = d.get("page_count", "?")
-            pdf.cell(0, 5, f"-  {safe(d['name'])}  ({pages} page{'s' if pages != 1 else ''})", ln=True)
-        for i in images:
-            pdf.set_x(14)
-            pdf.cell(0, 5, f"-  {safe(i['name'])}  (image)", ln=True)
+        # Light-coloured content area
+        pdf.set_fill_color(br, bg, bb)
+        pdf.set_text_color(30, 41, 59)
+
+        has_content = False
+        for line in body_lines:
+            s = line.strip()
+            if not s:
+                if has_content:
+                    pdf.ln(1.5)
+                continue
+            has_content = True
+            if is_bullet(s):
+                pdf.set_font("Helvetica", "", 8.5)
+                pdf.set_x(16)
+                pdf.multi_cell(184, 4.5, f"-  {bullet_body(s)}", fill=True)
+            else:
+                # Bold inline: lines fully wrapped in **...**
+                c = clean(s)
+                if s.startswith("**") and s.endswith("**") and len(s) > 4:
+                    pdf.set_font("Helvetica", "B", 8.5)
+                else:
+                    pdf.set_font("Helvetica", "", 8.5)
+                pdf.set_x(13)
+                pdf.multi_cell(187, 4.5, c, fill=True)
+
         pdf.ln(4)
 
-    # ── Compliance analysis ───────────────────────────────────────────────────
-    pdf.set_font("Helvetica", "B", 11)
+    # ── Build PDF ─────────────────────────────────────────────────────────────
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_page()
+
+    # HEADER BANNER
     pdf.set_fill_color(15, 41, 66)
+    pdf.rect(0, 0, 220, 50, "F")
+    pdf.set_fill_color(27, 94, 64)
+    pdf.rect(0, 47, 220, 5, "F")
+
     pdf.set_text_color(255, 255, 255)
-    pdf.set_x(10)
-    pdf.cell(190, 7, "  Compliance Analysis", ln=True, fill=True)
+    pdf.set_font("Helvetica", "B", 22)
+    pdf.set_xy(12, 7)
+    pdf.cell(0, 11, "PermitFix AI", ln=True)
+
+    pdf.set_font("Helvetica", "", 9)
+    pdf.set_text_color(180, 210, 255)
+    pdf.set_xy(12, 20)
+    pdf.cell(0, 6, "Ontario Building Code Compliance Report", ln=True)
+
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_xy(12, 29)
+    pdf.cell(0, 7, safe(meta.get("name", "Untitled Project")), ln=True)
+
+    pdf.set_font("Helvetica", "", 7.5)
+    pdf.set_text_color(160, 200, 255)
+    pdf.set_xy(12, 40)
+    pdf.cell(0, 5,
+             f"Generated {datetime.now().strftime('%B %d, %Y  at  %I:%M %p')}",
+             ln=True)
+
     pdf.set_text_color(30, 41, 59)
+    pdf.set_xy(10, 60)
+
+    # FILES REVIEWED (compact single line, no box)
+    n_docs = len(docs)
+    n_imgs = len(images)
+    if docs or images:
+        parts = []
+        if n_docs: parts.append(f"{n_docs} PDF document{'s' if n_docs > 1 else ''}")
+        if n_imgs: parts.append(f"{n_imgs} drawing{'s' if n_imgs > 1 else ''}")
+        pdf.set_font("Helvetica", "", 8.5)
+        pdf.set_text_color(100, 116, 139)
+        pdf.set_x(10)
+        pdf.cell(0, 5, "Documents reviewed:  " + "   |   ".join(parts), ln=True)
+        pdf.set_font("Helvetica", "", 7.5)
+        for d in docs:
+            pdf.set_x(16)
+            pages = d.get("page_count", "?")
+            pdf.cell(0, 4,
+                     f"-  {safe(d['name'])}  ({pages} pg{'s' if pages != 1 else ''})",
+                     ln=True)
+        for i in images:
+            pdf.set_x(16)
+            pdf.cell(0, 4, f"-  {safe(i['name'])}", ln=True)
+        pdf.ln(3)
+
+    # COLOUR LEGEND
+    pdf.set_text_color(30, 41, 59)
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.set_x(10)
+    pdf.cell(0, 5, "HOW TO READ THIS REPORT:", ln=True)
+    pdf.ln(1)
+
+    legend_items = [
+        ((22, 101, 52),  "COMPLIANT          Meets Ontario Building Code requirements"),
+        ((146, 64, 14),  "REVIEW REQUIRED    Needs clarification or minor attention"),
+        ((153, 27, 27),  "ACTION REQUIRED    Must be corrected before submission"),
+        ((30, 58, 138),  "NOTE               General information or recommendation"),
+    ]
+    for (r, g, b), txt in legend_items:
+        pdf.set_fill_color(r, g, b)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Helvetica", "", 7.5)
+        pdf.set_x(10)
+        pdf.cell(130, 5.5, f"  {safe(txt)}", fill=True, ln=True)
+        pdf.ln(0.8)
+
     pdf.ln(3)
 
+    # HOW TO USE — brief, plain, no scary box
+    pdf.set_font("Helvetica", "I", 7.5)
+    pdf.set_text_color(100, 116, 139)
+    pdf.set_x(10)
+    pdf.multi_cell(190, 4,
+        "This report tells you WHAT may need to change in your drawings -- "
+        "it does not make those changes for you. Review each flagged item, "
+        "update your drawings accordingly, and confirm with your architect or "
+        "engineer before submitting to the building department.")
+    pdf.ln(5)
+
+    # COMPLIANCE ANALYSIS SECTIONS
+    pdf.set_fill_color(15, 41, 66)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_x(10)
+    pdf.cell(190, 7, "  Compliance Analysis", fill=True, ln=True)
+    pdf.ln(4)
+
     assistant_msgs = [m for m in messages if m["role"] == "assistant"]
-    user_msgs      = [m for m in messages if m["role"] == "user"]
 
     if not assistant_msgs:
         pdf.set_font("Helvetica", "I", 9)
+        pdf.set_text_color(100, 116, 139)
         pdf.set_x(10)
-        pdf.cell(0, 6, "No analysis generated yet.", ln=True)
+        pdf.cell(0, 6, "No analysis has been generated for this project yet.", ln=True)
     else:
-        for idx, msg in enumerate(assistant_msgs):
-            # Optionally show the user question that prompted this response
-            if idx < len(user_msgs):
-                pdf.set_fill_color(241, 245, 249)
-                pdf.set_font("Helvetica", "I", 8)
-                pdf.set_text_color(100, 116, 139)
-                q = clean(user_msgs[idx]["content"])[:200]
-                pdf.set_x(10)
-                pdf.multi_cell(190, 4, f"Q: {q}", fill=True)
-                pdf.ln(1)
-
-            # Render AI response line by line
-            pdf.set_text_color(30, 41, 59)
-            for line in msg["content"].split("\n"):
-                stripped = line.strip()
-                if not stripped:
-                    pdf.ln(2)
+        for msg in assistant_msgs:
+            sections = parse_sections(msg["content"])
+            for title, body_lines in sections:
+                body_text = " ".join(l.strip() for l in body_lines if l.strip())
+                if not title and not body_text.strip():
                     continue
-                if is_header(stripped):
-                    pdf.set_font("Helvetica", "B", 10)
-                    pdf.set_x(10)
-                    pdf.multi_cell(190, 5, safe(header_text(stripped)))
-                    pdf.ln(1)
-                elif is_bullet(stripped):
-                    pdf.set_font("Helvetica", "", 9)
-                    pdf.set_x(14)
-                    pdf.multi_cell(186, 4, f"-  {clean(bullet_text(stripped))}")
-                else:
-                    pdf.set_font("Helvetica", "", 9)
-                    pdf.set_x(10)
-                    pdf.multi_cell(190, 4, clean(stripped))
+                status = classify(title or "", body_text)
+                render_section(pdf, title or "Summary", body_lines, status)
 
-            if idx < len(assistant_msgs) - 1:
-                pdf.ln(3)
-                pdf.set_draw_color(226, 232, 240)
-                pdf.set_x(10)
-                pdf.cell(190, 0, "", border="T", ln=True)
-                pdf.ln(3)
-
-    # ── Disclaimer ────────────────────────────────────────────────────────────
-    pdf.ln(6)
-    pdf.set_fill_color(254, 242, 242)
-    pdf.set_draw_color(252, 165, 165)
+    # ABOUT THIS REPORT — warm, reassuring, light
+    pdf.ln(4)
+    pdf.set_fill_color(248, 250, 252)
+    pdf.set_draw_color(203, 213, 225)
     pdf.set_x(10)
-    pdf.set_font("Helvetica", "B", 8)
-    pdf.set_text_color(153, 27, 27)
-    pdf.cell(190, 5, "  Legal Disclaimer - AI-Generated Content",
-             ln=True, fill=True, border=1)
-    pdf.set_font("Helvetica", "", 7.5)
+    pdf.set_font("Helvetica", "B", 8.5)
     pdf.set_text_color(30, 41, 59)
+    pdf.cell(190, 6, "  About This Report", ln=True, fill=True, border=1)
+    pdf.set_font("Helvetica", "", 7.5)
+    pdf.set_text_color(71, 85, 105)
     pdf.set_x(10)
-    pdf.multi_cell(190, 4,
-        "This document was produced by an artificial intelligence system (PermitFix AI) and is provided "
-        "for informational purposes only. It is a preliminary screening tool to help identify areas of "
-        "your drawings that may require attention - it is not a code compliance certificate, "
-        "professional opinion, or permit approval.\n\n"
-        "AI can make errors. The analysis in this report may contain inaccuracies, omissions, or "
-        "misinterpretations of the Ontario Building Code. Items flagged may not be actual violations, "
-        "and real violations may not have been identified. You are responsible for verifying every "
-        "item independently.\n\n"
-        "This report does not replace the judgment of a licensed architect, professional engineer, "
-        "or qualified building official. All revisions to your drawings must be made by a qualified "
-        "professional and re-reviewed before submission to any authority having jurisdiction.",
+    pdf.multi_cell(190, 4.5,
+        "PermitFix AI is built to help you catch issues early and walk into the permit process "
+        "better prepared. Think of this report as a knowledgeable second set of eyes -- one that "
+        "has cross-referenced your drawings against the 2024 Ontario Building Code so you can "
+        "focus on making the right corrections.\n\n"
+        "Like any tool, it works best alongside professional expertise. Some findings may not "
+        "apply to your specific site or project type, and there may be nuances a professional "
+        "reviewer would catch that AI cannot. We always recommend reviewing these findings with "
+        "your architect, engineer, or building official before finalising your submission.\n\n"
+        "For internal use only. Not a permit, code compliance certificate, or professional opinion. "
+        "PermitFix AI and 77Inc are not liable for decisions made based on this report.",
         fill=True, border=1)
 
-    # ── Footer ────────────────────────────────────────────────────────────────
+    # FOOTER
     pdf.set_text_color(148, 163, 184)
     pdf.set_font("Helvetica", "", 7)
     pdf.set_xy(10, 285)
-    pdf.cell(0, 4, "PermitFix AI · Brought to you by 77Inc · Ontario Building Code Compliance Tool",
+    pdf.cell(0, 4,
+             "PermitFix AI  |  Brought to you by 77Inc  |  Ontario Building Code Compliance Tool",
              align="C")
 
     return bytes(pdf.output())
