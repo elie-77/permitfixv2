@@ -185,11 +185,38 @@ def get_sb():
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
+def _save_tokens(session):
+    """Persist Supabase tokens in st.session_state so restore_session() can use them."""
+    if session:
+        st.session_state.sb_access_token  = session.access_token
+        st.session_state.sb_refresh_token = session.refresh_token
+
+def restore_session():
+    """On every page load, try to restore a previous Supabase session from stored tokens."""
+    if st.session_state.get("sb_user"):
+        return  # already logged in this session
+    access  = st.session_state.get("sb_access_token")
+    refresh = st.session_state.get("sb_refresh_token")
+    if not access:
+        return
+    try:
+        res = get_sb().auth.set_session(access, refresh)
+        if res.user:
+            st.session_state.sb_user = res.user
+            # Store refreshed tokens (Supabase may have issued new ones)
+            _save_tokens(res.session)
+            st.session_state.pop("subscription", None)
+    except Exception:
+        # Tokens expired or invalid — clear them so login screen shows
+        st.session_state.pop("sb_access_token",  None)
+        st.session_state.pop("sb_refresh_token", None)
+
 def do_login(email: str, password: str) -> bool:
     try:
         res = get_sb().auth.sign_in_with_password({"email": email.strip(), "password": password})
         st.session_state.sb_user = res.user
-        st.session_state.pop("subscription", None)   # clear cached subscription
+        _save_tokens(res.session)
+        st.session_state.pop("subscription", None)
         return True
     except Exception as e:
         msg = str(e)
@@ -678,16 +705,16 @@ def generate_report_pdf(meta, messages, docs, images) -> bytes:
     pdf.set_x(10)
     pdf.set_font("Helvetica", "B", 9)
     pdf.set_text_color(30, 64, 175)
-    pdf.cell(190, 6, "  \u26a0  HOW TO USE THIS REPORT \u2014 PLEASE READ BEFORE PROCEEDING",
+    pdf.cell(190, 6, "  [!]  HOW TO USE THIS REPORT -- PLEASE READ BEFORE PROCEEDING",
              ln=True, fill=True, border=1)
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(30, 41, 59)
     pdf.set_x(10)
     pdf.multi_cell(190, 5,
         "This report identifies potential issues with your permit drawings based on the Ontario Building "
-        "Code. It tells you WHAT may need to change \u2014 it does NOT make those changes for you.\n\n"
+        "Code. It tells you WHAT may need to change -- it does NOT make those changes for you.\n\n"
         "You must review each flagged item and update your drawings, specifications, and documents "
-        "accordingly before resubmitting. Do not submit this report to a building department \u2014 "
+        "accordingly before resubmitting. Do not submit this report to a building department -- "
         "it is a working reference for your own revisions.\n\n"
         "AI systems can and do make mistakes. Items flagged here may not all be actual violations, "
         "and there may be issues not caught by this review. Always have your final drawings reviewed "
@@ -709,10 +736,10 @@ def generate_report_pdf(meta, messages, docs, images) -> bytes:
         for d in docs:
             pdf.set_x(14)
             pages = d.get("page_count", "?")
-            pdf.cell(0, 5, f"\u2022  {safe(d['name'])}  ({pages} page{'s' if pages != 1 else ''})", ln=True)
+            pdf.cell(0, 5, f"-  {safe(d['name'])}  ({pages} page{'s' if pages != 1 else ''})", ln=True)
         for i in images:
             pdf.set_x(14)
-            pdf.cell(0, 5, f"\u2022  {safe(i['name'])}  (image)", ln=True)
+            pdf.cell(0, 5, f"-  {safe(i['name'])}  (image)", ln=True)
         pdf.ln(4)
 
     # ── Compliance analysis ───────────────────────────────────────────────────
@@ -758,7 +785,7 @@ def generate_report_pdf(meta, messages, docs, images) -> bytes:
                 elif is_bullet(stripped):
                     pdf.set_font("Helvetica", "", 9)
                     pdf.set_x(14)
-                    pdf.multi_cell(186, 4, f"\u2022  {clean(bullet_text(stripped))}")
+                    pdf.multi_cell(186, 4, f"-  {clean(bullet_text(stripped))}")
                 else:
                     pdf.set_font("Helvetica", "", 9)
                     pdf.set_x(10)
@@ -778,7 +805,7 @@ def generate_report_pdf(meta, messages, docs, images) -> bytes:
     pdf.set_x(10)
     pdf.set_font("Helvetica", "B", 8)
     pdf.set_text_color(153, 27, 27)
-    pdf.cell(190, 5, "  Legal Disclaimer \u2014 AI-Generated Content",
+    pdf.cell(190, 5, "  Legal Disclaimer - AI-Generated Content",
              ln=True, fill=True, border=1)
     pdf.set_font("Helvetica", "", 7.5)
     pdf.set_text_color(30, 41, 59)
@@ -786,7 +813,7 @@ def generate_report_pdf(meta, messages, docs, images) -> bytes:
     pdf.multi_cell(190, 4,
         "This document was produced by an artificial intelligence system (PermitFix AI) and is provided "
         "for informational purposes only. It is a preliminary screening tool to help identify areas of "
-        "your drawings that may require attention \u2014 it is not a code compliance certificate, "
+        "your drawings that may require attention - it is not a code compliance certificate, "
         "professional opinion, or permit approval.\n\n"
         "AI can make errors. The analysis in this report may contain inaccuracies, omissions, or "
         "misinterpretations of the Ontario Building Code. Items flagged may not be actual violations, "
@@ -857,9 +884,11 @@ def go_home():
 # AUTH GATE
 # ═════════════════════════════════════════════════════════════════════════════
 
-# ── SSO token handoff from Lovable ───────────────────────────────────────────
+# ── 1. Restore session from stored tokens (survives rerun, not full refresh) ──
+restore_session()
+
+# ── 2. SSO token handoff from Lovable ────────────────────────────────────────
 # Lovable redirects here with ?access_token=...&refresh_token=... after login.
-# We restore the Supabase session from those tokens, then clear them from the URL.
 if not st.session_state.sb_user:
     params = st.query_params
     if "access_token" in params:
@@ -871,11 +900,11 @@ if not st.session_state.sb_user:
             )
             if res.user:
                 st.session_state.sb_user = res.user
+                _save_tokens(res.session)          # persist so refresh survives
                 st.session_state.pop("subscription", None)
                 st.query_params.clear()
                 st.rerun()
         except Exception:
-            # Token invalid or expired — clear and fall through to login screen
             st.query_params.clear()
 
 if not st.session_state.sb_user:
