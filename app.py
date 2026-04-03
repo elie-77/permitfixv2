@@ -41,9 +41,14 @@ MEDIA_TYPE_MAP = {
 STATUSES = ["🔵 In Review", "🟡 Corrections Needed", "🟢 Approved", "⚫ On Hold"]
 
 st.set_page_config(
-    page_title="Ontario AI Permit PreChecker",
+    page_title="PermitFix AI",
     page_icon="🏗️",
     layout="wide",
+    menu_items={
+        "Get Help": None,
+        "Report a bug": None,
+        "About": None,
+    }
 )
 
 # Must be instantiated at module level so it can read/write browser cookies
@@ -81,9 +86,22 @@ components.html("""
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-[data-testid="stHeader"]          { display: none !important; }
-[data-testid="InputInstructions"] { display: none !important; }
-[data-testid="stSidebar"]         { display: none !important; }
+/* ── Hide all Streamlit chrome ── */
+[data-testid="stHeader"]             { display: none !important; }
+[data-testid="InputInstructions"]    { display: none !important; }
+[data-testid="stSidebar"]            { display: none !important; }
+[data-testid="stToolbar"]            { display: none !important; }
+[data-testid="stDecoration"]         { display: none !important; }
+[data-testid="stStatusWidget"]       { display: none !important; }
+#MainMenu                            { display: none !important; }
+footer                               { display: none !important; }
+.stDeployButton                      { display: none !important; }
+/* Running/stop button */
+[data-testid="stAppViewBlockContainer"] > div:first-child
+                                     { margin-top: 0 !important; }
+button[kind="header"]                { display: none !important; }
+/* Loading spinner overlay */
+.stSpinner > div                     { border-top-color: #1b5e40 !important; }
 
 .block-container {
     padding: 1.8rem 2.5rem !important;
@@ -248,11 +266,17 @@ def restore_session():
     access  = st.session_state.get("sb_access_token")
     refresh = st.session_state.get("sb_refresh_token", "")
 
-    # 2. Fall back to browser cookies (survives tab close / browser refresh)
+    # 2. Fall back to browser cookies (survives browser refresh / tab close)
     if not access:
         try:
-            access  = _cookies.get("sb_access")
-            refresh = _cookies.get("sb_refresh") or ""
+            # CookieController needs one rerun to load cookies from the browser.
+            # If the cookie dict is empty on first run, trigger a rerun so it
+            # gets a chance to populate — then we read on the second pass.
+            all_cookies = _cookies.getAll()
+            if all_cookies is None:
+                st.rerun()
+            access  = all_cookies.get("sb_access", "")
+            refresh = all_cookies.get("sb_refresh", "")
         except Exception:
             return
 
@@ -262,11 +286,13 @@ def restore_session():
     try:
         res = get_sb().auth.set_session(access, refresh)
         if res.user:
-            st.session_state.sb_user = res.user
-            _save_tokens(res.session)          # refresh tokens if Supabase issued new ones
+            st.session_state.sb_user      = res.user
+            st.session_state.sb_access_token  = res.session.access_token
+            st.session_state.sb_refresh_token = res.session.refresh_token
+            _save_tokens(res.session)
             st.session_state.pop("subscription", None)
     except Exception:
-        # Tokens are dead — wipe everything so the login screen shows cleanly
+        # Tokens are dead — wipe so login screen shows cleanly
         for k in ("sb_access_token", "sb_refresh_token"):
             st.session_state.pop(k, None)
         try:
