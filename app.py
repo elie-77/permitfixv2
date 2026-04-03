@@ -393,59 +393,47 @@ def show_login_view():
 
         auth_error = st.query_params.get("auth_error", "")
         if auth_error:
+            st.query_params.clear()
             st.error(
-                "Your login link has expired or is no longer valid. "
-                "Enter your email below to get a fresh one.",
+                "Your login link has expired or is no longer valid.",
                 icon="🔒",
             )
-            st.query_params.clear()
-
-        # ── Magic link form (sent via YOUR Supabase) ──────────────────────────
-        with st.container(border=True):
+            st.link_button(
+                "Get a new login link →",
+                LOVABLE_URL + "/login",
+                use_container_width=True,
+                type="primary",
+            )
+        else:
+            # Waiting for magic link token — send them to Lovable to log in
             st.markdown(
                 "<p style='font-size:1rem;font-weight:600;margin-bottom:0.25rem'>"
                 "Sign in to your account</p>",
                 unsafe_allow_html=True,
             )
             st.markdown(
-                "<p style='font-size:0.83rem;color:#64748b;margin-bottom:0.75rem'>"
-                "Enter your email and we'll send you a one-click login link. "
-                "No password needed.</p>",
+                "<p style='font-size:0.83rem;color:#64748b;margin-bottom:1rem'>"
+                "Use your login link from your email, or visit the link below "
+                "to request a new one.</p>",
                 unsafe_allow_html=True,
             )
-            magic_email = st.text_input("Email address", key="magic_email",
-                                        placeholder="you@firm.com",
-                                        label_visibility="collapsed")
-            if st.button("✉️  Send me a login link", type="primary",
-                         use_container_width=True, key="magic_btn"):
-                if magic_email.strip():
-                    if send_magic_link(magic_email.strip()):
-                        st.success(
-                            "Login link sent! Check your inbox and click the link "
-                            "to be signed in automatically.",
-                            icon="✅",
-                        )
-                    else:
-                        st.error(
-                            "No account found for that email. "
-                            "Have you purchased access yet?",
-                            icon="❌",
-                        )
-                else:
-                    st.warning("Please enter your email address.")
-
-        st.divider()
-
-        st.markdown(
-            "<p style='font-size:0.83rem;color:#64748b;margin-bottom:0.5rem'>"
-            "Don't have an account yet?</p>",
-            unsafe_allow_html=True,
-        )
-        st.link_button(
-            "Get Access — Starting at $20",
-            LOVABLE_URL,
-            use_container_width=True,
-        )
+            st.link_button(
+                "✉️  Sign in at permitfix.ca",
+                LOVABLE_URL + "/login",
+                use_container_width=True,
+                type="primary",
+            )
+            st.divider()
+            st.markdown(
+                "<p style='font-size:0.83rem;color:#64748b;margin-bottom:0.5rem'>"
+                "Don't have an account yet?</p>",
+                unsafe_allow_html=True,
+            )
+            st.link_button(
+                "Get Access — Starting at $20",
+                LOVABLE_URL,
+                use_container_width=True,
+            )
 
 
 # ── Paywall view ──────────────────────────────────────────────────────────────
