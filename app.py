@@ -392,54 +392,60 @@ def show_login_view():
         """, unsafe_allow_html=True)
 
         auth_error = st.query_params.get("auth_error", "")
-
         if auth_error:
-            # ── Expired / invalid link ────────────────────────────────────────
             st.error(
                 "Your login link has expired or is no longer valid. "
-                "Request a new one from the link below.",
+                "Enter your email below to get a fresh one.",
                 icon="🔒",
             )
             st.query_params.clear()
-            st.link_button(
-                "Go to permitfix.ca to get a new login link",
-                LOVABLE_URL + "/login",
-                use_container_width=True,
-                type="primary",
-            )
-        else:
-            # ── Normal state: no token yet, redirect to Lovable to log in ─────
-            with st.container(border=True):
-                st.markdown(
-                    "<p style='font-size:1rem;font-weight:600;margin-bottom:0.25rem'>"
-                    "Sign in to access your account</p>",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    "<p style='font-size:0.83rem;color:#64748b;margin-bottom:1rem'>"
-                    "Click below to get a secure login link sent to your email. "
-                    "One click and you're in — no password needed.</p>",
-                    unsafe_allow_html=True,
-                )
-                st.link_button(
-                    "✉️  Send me a login link",
-                    LOVABLE_URL + "/login",
-                    use_container_width=True,
-                    type="primary",
-                )
 
-            st.divider()
-
+        # ── Magic link form (sent via YOUR Supabase) ──────────────────────────
+        with st.container(border=True):
             st.markdown(
-                "<p style='font-size:0.83rem;color:#64748b;margin-bottom:0.5rem'>"
-                "Don't have an account yet?</p>",
+                "<p style='font-size:1rem;font-weight:600;margin-bottom:0.25rem'>"
+                "Sign in to your account</p>",
                 unsafe_allow_html=True,
             )
-            st.link_button(
-                "Get Access — Starting at $20",
-                LOVABLE_URL,
-                use_container_width=True,
+            st.markdown(
+                "<p style='font-size:0.83rem;color:#64748b;margin-bottom:0.75rem'>"
+                "Enter your email and we'll send you a one-click login link. "
+                "No password needed.</p>",
+                unsafe_allow_html=True,
             )
+            magic_email = st.text_input("Email address", key="magic_email",
+                                        placeholder="you@firm.com",
+                                        label_visibility="collapsed")
+            if st.button("✉️  Send me a login link", type="primary",
+                         use_container_width=True, key="magic_btn"):
+                if magic_email.strip():
+                    if send_magic_link(magic_email.strip()):
+                        st.success(
+                            "Login link sent! Check your inbox and click the link "
+                            "to be signed in automatically.",
+                            icon="✅",
+                        )
+                    else:
+                        st.error(
+                            "No account found for that email. "
+                            "Have you purchased access yet?",
+                            icon="❌",
+                        )
+                else:
+                    st.warning("Please enter your email address.")
+
+        st.divider()
+
+        st.markdown(
+            "<p style='font-size:0.83rem;color:#64748b;margin-bottom:0.5rem'>"
+            "Don't have an account yet?</p>",
+            unsafe_allow_html=True,
+        )
+        st.link_button(
+            "Get Access — Starting at $20",
+            LOVABLE_URL,
+            use_container_width=True,
+        )
 
 
 # ── Paywall view ──────────────────────────────────────────────────────────────
