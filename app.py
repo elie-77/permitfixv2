@@ -578,6 +578,188 @@ def build_api_messages(chat_messages, images):
             f"I've reviewed all {len(images)} drawing(s) and am ready to analyze them."},
     ] + chat_messages
 
+def generate_report_pdf(meta, messages, docs, images) -> bytes:
+    """Build a formatted PDF compliance report and return as bytes."""
+    from fpdf import FPDF
+    import re
+
+    def clean(text: str) -> str:
+        """Strip markdown for plain-text PDF rendering."""
+        text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+        text = re.sub(r"\*(.+?)\*",   r"\1", text)
+        text = re.sub(r"__(.+?)__",   r"\1", text)
+        text = re.sub(r"`{1,3}[^`]*`{1,3}", "", text)
+        text = re.sub(r"\[(.+?)\]\(.+?\)", r"\1", text)
+        return text
+
+    def is_header(line: str) -> bool:
+        return re.match(r"^#{1,6}\s+", line) is not None
+
+    def header_text(line: str) -> str:
+        return re.sub(r"^#{1,6}\s+", "", line).strip()
+
+    def is_bullet(line: str) -> bool:
+        return re.match(r"^\s*[-*•]\s+", line) is not None
+
+    def bullet_text(line: str) -> str:
+        return re.sub(r"^\s*[-*•]\s+", "", line).strip()
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=18)
+    pdf.add_page()
+
+    # ── Cover header bar ─────────────────────────────────────────────────────
+    pdf.set_fill_color(15, 41, 66)          # dark blue
+    pdf.rect(0, 0, 220, 38, "F")
+    pdf.set_fill_color(27, 94, 64)          # green accent strip
+    pdf.rect(0, 36, 220, 4, "F")
+
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Helvetica", "B", 20)
+    pdf.set_xy(12, 8)
+    pdf.cell(0, 9, "PermitFix AI", ln=True)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_xy(12, 19)
+    pdf.cell(0, 7, "Ontario Building Code Compliance Report", ln=True)
+    pdf.set_xy(12, 28)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.cell(0, 6, f"Generated {datetime.now().strftime('%B %d, %Y  %H:%M')}", ln=True)
+
+    pdf.set_text_color(30, 41, 59)
+    pdf.set_xy(10, 48)
+
+    # ── Project info box ──────────────────────────────────────────────────────
+    pdf.set_fill_color(248, 250, 252)
+    pdf.set_draw_color(226, 232, 240)
+    pdf.rect(10, 48, 190, 34, "FD")
+
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.set_xy(14, 52)
+    pdf.cell(0, 7, meta.get("name", "Untitled Project"), ln=True)
+
+    pdf.set_font("Helvetica", "", 9)
+    pdf.set_text_color(100, 116, 139)
+    pdf.set_xy(14, 60)
+    if meta.get("address"):
+        pdf.cell(60, 5, f"Address: {meta['address']}")
+    pdf.cell(60, 5, f"Status: {meta.get('status', '—')}")
+    pdf.cell(0,  5, f"Created: {meta.get('created', '—')}", ln=True)
+
+    n_docs = len(docs)
+    n_imgs = len(images)
+    pdf.set_xy(14, 67)
+    pdf.cell(0, 5,
+             f"Documents reviewed: {n_docs} PDF{'s' if n_docs != 1 else ''}  ·  "
+             f"{n_imgs} image{'s' if n_imgs != 1 else ''}", ln=True)
+
+    pdf.set_text_color(30, 41, 59)
+    pdf.ln(6)
+
+    # ── Files reviewed ────────────────────────────────────────────────────────
+    if docs or images:
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.set_fill_color(15, 41, 66)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_x(10)
+        pdf.cell(190, 7, "  Files Reviewed", ln=True, fill=True)
+        pdf.set_text_color(30, 41, 59)
+        pdf.set_font("Helvetica", "", 9)
+        pdf.ln(2)
+
+        for d in docs:
+            pdf.set_x(14)
+            pages = d.get("page_count", "?")
+            pdf.cell(0, 5, f"\u2022  {d['name']}  ({pages} page{'s' if pages != 1 else ''})", ln=True)
+        for i in images:
+            pdf.set_x(14)
+            pdf.cell(0, 5, f"\u2022  {i['name']}  (image)", ln=True)
+        pdf.ln(4)
+
+    # ── Compliance analysis ───────────────────────────────────────────────────
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.set_fill_color(15, 41, 66)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_x(10)
+    pdf.cell(190, 7, "  Compliance Analysis", ln=True, fill=True)
+    pdf.set_text_color(30, 41, 59)
+    pdf.ln(3)
+
+    assistant_msgs = [m for m in messages if m["role"] == "assistant"]
+    user_msgs      = [m for m in messages if m["role"] == "user"]
+
+    if not assistant_msgs:
+        pdf.set_font("Helvetica", "I", 9)
+        pdf.set_x(10)
+        pdf.cell(0, 6, "No analysis generated yet.", ln=True)
+    else:
+        for idx, msg in enumerate(assistant_msgs):
+            # Optionally show the user question that prompted this response
+            if idx < len(user_msgs):
+                pdf.set_fill_color(241, 245, 249)
+                pdf.set_font("Helvetica", "I", 8)
+                pdf.set_text_color(100, 116, 139)
+                q = clean(user_msgs[idx]["content"])[:200]
+                pdf.set_x(10)
+                pdf.multi_cell(190, 4, f"Q: {q}", fill=True)
+                pdf.ln(1)
+
+            # Render AI response line by line
+            pdf.set_text_color(30, 41, 59)
+            for line in msg["content"].split("\n"):
+                stripped = line.strip()
+                if not stripped:
+                    pdf.ln(2)
+                    continue
+                if is_header(stripped):
+                    pdf.set_font("Helvetica", "B", 10)
+                    pdf.set_x(10)
+                    pdf.multi_cell(190, 5, header_text(stripped))
+                    pdf.ln(1)
+                elif is_bullet(stripped):
+                    pdf.set_font("Helvetica", "", 9)
+                    pdf.set_x(14)
+                    pdf.multi_cell(186, 4, f"\u2022  {clean(bullet_text(stripped))}")
+                else:
+                    pdf.set_font("Helvetica", "", 9)
+                    pdf.set_x(10)
+                    pdf.multi_cell(190, 4, clean(stripped))
+
+            if idx < len(assistant_msgs) - 1:
+                pdf.ln(3)
+                pdf.set_draw_color(226, 232, 240)
+                pdf.set_x(10)
+                pdf.cell(190, 0, "", border="T", ln=True)
+                pdf.ln(3)
+
+    # ── Disclaimer ────────────────────────────────────────────────────────────
+    pdf.ln(6)
+    pdf.set_fill_color(254, 249, 231)
+    pdf.set_draw_color(253, 224, 71)
+    pdf.set_x(10)
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.set_text_color(120, 80, 0)
+    pdf.cell(190, 5, "  Disclaimer", ln=True, fill=True, border=1)
+    pdf.set_font("Helvetica", "", 7.5)
+    pdf.set_x(10)
+    pdf.multi_cell(190, 4,
+        "This report is generated by an AI system and is intended as a preliminary "
+        "screening tool only. It does not constitute professional engineering or architectural "
+        "advice and should not be used as a substitute for review by a qualified professional. "
+        "Always verify compliance with the current Ontario Building Code and applicable municipal "
+        "bylaws with a licensed architect, engineer, or building official before submission.",
+        fill=True, border=1)
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    pdf.set_text_color(148, 163, 184)
+    pdf.set_font("Helvetica", "", 7)
+    pdf.set_xy(10, 285)
+    pdf.cell(0, 4, "PermitFix AI · Brought to you by 77Inc · Ontario Building Code Compliance Tool",
+             align="C")
+
+    return bytes(pdf.output())
+
+
 def stream_response(client, messages, system):
     full, placeholder = "", st.empty()
     with client.messages.stream(model=MODEL, max_tokens=16000,
@@ -798,7 +980,7 @@ else:
     pid  = st.session_state.current_pid
     meta = load_meta(pid)
 
-    col_back, col_title, col_status = st.columns([1, 4, 2])
+    col_back, col_title, col_status, col_pdf = st.columns([1, 4, 2, 1.5])
     with col_back:
         if st.button("← Projects"):
             go_home()
@@ -817,6 +999,30 @@ else:
             meta["status"]   = new_status
             meta["modified"] = now_str()
             save_meta(meta)
+    with col_pdf:
+        has_analysis = any(m["role"] == "assistant" for m in st.session_state.messages)
+        if has_analysis:
+            try:
+                pdf_bytes = generate_report_pdf(
+                    meta,
+                    st.session_state.messages,
+                    st.session_state.docs,
+                    st.session_state.images,
+                )
+                safe_name = meta["name"].replace(" ", "_")[:40]
+                st.download_button(
+                    label="⬇ Report PDF",
+                    data=pdf_bytes,
+                    file_name=f"PermitFix_{safe_name}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    type="primary",
+                )
+            except Exception as e:
+                st.caption(f"PDF error: {e}")
+        else:
+            st.button("⬇ Report PDF", disabled=True, use_container_width=True,
+                      help="Run an analysis first to generate a report.")
 
     st.divider()
 
