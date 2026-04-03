@@ -1191,7 +1191,12 @@ if st.session_state.view == "home":
 
 else:
     pid  = st.session_state.current_pid
-    meta = load_meta(pid)
+    # Guard: if project no longer exists on disk, go home gracefully
+    try:
+        meta = load_meta(pid)
+    except Exception:
+        go_home()
+        st.rerun()
 
     col_back, col_title, col_status, col_pdf = st.columns([1, 4, 2, 1.5])
     with col_back:
