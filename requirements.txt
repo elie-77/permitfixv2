@@ -5,4 +5,3 @@ python-dotenv>=1.0.0
 pillow>=10.0.0
 supabase>=2.0.0
 fpdf2>=2.7.0
-streamlit-cookies-controller==0.0.4

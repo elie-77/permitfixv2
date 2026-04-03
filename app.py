@@ -12,7 +12,6 @@ import streamlit as st
 import pdfplumber
 from dotenv import load_dotenv
 from supabase import create_client
-from streamlit_cookies_controller import CookieController
 
 load_dotenv()
 
@@ -54,27 +53,27 @@ st.set_page_config(
     }
 )
 
-# Must be instantiated at module level so it can read/write browser cookies
-# across page refreshes (session_state alone doesn't survive a browser refresh)
-_cookies = CookieController(key="pf_auth")
-
 # ── Magic link hash fragment handler ─────────────────────────────────────────
 # Supabase magic links put tokens in URL hash (#access_token=...).
-# Streamlit can't read hashes server-side. st.components.v1.html() runs
-# in an iframe that CAN execute JS — it reads the parent window's hash
-# and reloads with query params that Streamlit CAN read.
+# Streamlit can't read hashes server-side. components.html() runs in an iframe
+# that CAN execute JS. It reads the parent hash, saves to localStorage
+# (survives browser refresh), then reloads with query params Streamlit CAN read.
 import streamlit.components.v1 as components
 components.html("""
 <script>
 (function() {
-    const hash = window.parent.location.hash;
+    var hash = window.parent.location.hash;
     if (!hash || hash.length < 2) return;
-    const params = new URLSearchParams(hash.replace('#', ''));
-    const access = params.get('access_token');
-    const error  = params.get('error');
-    const url    = new URL(window.parent.location.href);
-    url.hash = '';
+    var params = new URLSearchParams(hash.replace('#', ''));
+    var access = params.get('access_token');
+    var error  = params.get('error');
+    var url    = new URL(window.parent.location.href);
+    url.hash   = '';
     if (access) {
+        try {
+            window.parent.localStorage.setItem('pf_access',  access);
+            window.parent.localStorage.setItem('pf_refresh', params.get('refresh_token') || '');
+        } catch(e) {}
         url.searchParams.set('access_token',  access);
         url.searchParams.set('refresh_token', params.get('refresh_token') || '');
         window.parent.location.replace(url.toString());
@@ -245,84 +244,17 @@ def get_sb():
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
 def _save_tokens(session):
-    """Write Supabase tokens to browser cookies (survives refresh) + session_state."""
+    """Write Supabase tokens to session_state. localStorage is updated by JS component."""
     if not session:
         return
     st.session_state.sb_access_token  = session.access_token
     st.session_state.sb_refresh_token = session.refresh_token
-    try:
-        from datetime import timedelta
-        _cookies.set("sb_access",  session.access_token,
-                     expires=datetime.now() + timedelta(days=7))
-        _cookies.set("sb_refresh", session.refresh_token,
-                     expires=datetime.now() + timedelta(days=30))
-    except Exception:
-        pass
 
 
 def restore_session():
-    """Restore Supabase session from cookies or session_state (runs on every page load)."""
-    if st.session_state.get("sb_user"):
-        return
-
-    # 1. Try session_state (fast, survives reruns within the same tab)
-    access  = st.session_state.get("sb_access_token")
-    refresh = st.session_state.get("sb_refresh_token", "")
-
-    # 2. Fall back to browser cookies (survives browser refresh / tab close)
-    if not access:
-        try:
-            # CookieController needs one rerun to load cookies from the browser.
-            # If the cookie dict is empty on first run, trigger a rerun so it
-            # gets a chance to populate — then we read on the second pass.
-            all_cookies = _cookies.getAll()
-            if all_cookies is None:
-                st.rerun()
-            access  = all_cookies.get("sb_access", "")
-            refresh = all_cookies.get("sb_refresh", "")
-        except Exception:
-            return
-
-    if not access:
-        return
-
-    # ── Try to restore with existing access token first ──────────────────────
-    session_ok = False
-    try:
-        res = get_sb().auth.set_session(access, refresh)
-        if res.user:
-            st.session_state.sb_user          = res.user
-            st.session_state.sb_access_token  = res.session.access_token
-            st.session_state.sb_refresh_token = res.session.refresh_token
-            _save_tokens(res.session)
-            st.session_state.pop("subscription", None)
-            session_ok = True
-    except Exception:
-        pass
-
-    # ── If access token expired, try refreshing with the refresh token ────────
-    if not session_ok and refresh:
-        try:
-            res = get_sb().auth.refresh_session(refresh)
-            if res.user:
-                st.session_state.sb_user          = res.user
-                st.session_state.sb_access_token  = res.session.access_token
-                st.session_state.sb_refresh_token = res.session.refresh_token
-                _save_tokens(res.session)
-                st.session_state.pop("subscription", None)
-                session_ok = True
-        except Exception:
-            pass
-
-    # ── Both failed — tokens are dead, wipe and show login ───────────────────
-    if not session_ok:
-        for k in ("sb_access_token", "sb_refresh_token"):
-            st.session_state.pop(k, None)
-        try:
-            _cookies.remove("sb_access")
-            _cookies.remove("sb_refresh")
-        except Exception:
-            pass
+    """No-op: session_state survives reruns within a tab.
+    Browser refresh is handled by the localStorage→query_params JS bridge."""
+    pass
 
 def do_login(email: str, password: str) -> bool:
     try:
@@ -345,13 +277,10 @@ def do_logout():
         get_sb().auth.sign_out()
     except Exception:
         pass
-    try:
-        _cookies.remove("sb_access")
-        _cookies.remove("sb_refresh")
-    except Exception:
-        pass
     for key in list(st.session_state.keys()):
         del st.session_state[key]
+    # Signal the next render to clear localStorage via JS
+    st.session_state["_clear_ls"] = True
 
 
 def send_password_reset(email: str):
@@ -1049,32 +978,108 @@ def go_home():
 # AUTH GATE
 # ═════════════════════════════════════════════════════════════════════════════
 
-# ── 1. Restore session from stored tokens (survives rerun, not full refresh) ──
-restore_session()
+# ── 1. Clear localStorage on logout (JS runs client-side) ────────────────────
+if st.session_state.get("_clear_ls"):
+    st.session_state.pop("_clear_ls", None)
+    components.html("""
+    <script>
+    try {
+        window.parent.localStorage.removeItem('pf_access');
+        window.parent.localStorage.removeItem('pf_refresh');
+    } catch(e) {}
+    </script>
+    """, height=0)
 
-# ── 2. SSO token handoff from Lovable ────────────────────────────────────────
-# Lovable redirects here with ?access_token=...&refresh_token=... after login.
-if not st.session_state.sb_user:
-    params = st.query_params
-    if "access_token" in params:
+# ── 2. Authenticate from query params (magic link OR localStorage restore) ────
+if not st.session_state.get("sb_user"):
+    _p = st.query_params
+    if "access_token" in _p:
+        _access  = _p.get("access_token")
+        _refresh = _p.get("refresh_token", "")
+        _authed  = False
+
+        # Try set_session first (works when access token still valid)
         try:
-            sb  = get_sb()
-            res = sb.auth.set_session(
-                params.get("access_token"),
-                params.get("refresh_token", ""),
-            )
-            if res.user:
-                st.session_state.sb_user = res.user
-                _save_tokens(res.session)          # persist so refresh survives
-                st.session_state.pop("subscription", None)
-                st.query_params.clear()
-                st.rerun()
+            _res = get_sb().auth.set_session(_access, _refresh)
+            if _res.user:
+                st.session_state.sb_user = _res.user
+                _save_tokens(_res.session)
+                _authed = True
         except Exception:
+            pass
+
+        # Access token expired — try refreshing with the refresh token
+        if not _authed and _refresh:
+            try:
+                _res = get_sb().auth.refresh_session(_refresh)
+                if _res.user:
+                    st.session_state.sb_user = _res.user
+                    _save_tokens(_res.session)
+                    _authed = True
+            except Exception:
+                pass
+
+        if _authed:
+            st.session_state.pop("subscription", None)
+            st.query_params.clear()
+            st.rerun()
+        else:
+            # Tokens are completely dead — clear localStorage to stop the loop
+            components.html("""
+            <script>
+            try {
+                window.parent.localStorage.removeItem('pf_access');
+                window.parent.localStorage.removeItem('pf_refresh');
+            } catch(e) {}
+            </script>
+            """, height=0)
             st.query_params.clear()
 
-if not st.session_state.sb_user:
+# ── 3. Not logged in — inject localStorage→URL restore JS, then show login ───
+if not st.session_state.get("sb_user"):
+    # This JS runs in the browser: reads localStorage tokens and redirects
+    # with them as query params so Streamlit can read them (step 2 above).
+    # Only fires if tokens exist AND no access_token is already in the URL
+    # (preventing a redirect loop).
+    components.html("""
+    <script>
+    (function() {
+        var url = new URL(window.parent.location.href);
+        if (url.searchParams.get('access_token')) return;
+        try {
+            var access  = window.parent.localStorage.getItem('pf_access');
+            var refresh = window.parent.localStorage.getItem('pf_refresh');
+            if (access) {
+                url.searchParams.set('access_token',  access);
+                url.searchParams.set('refresh_token', refresh || '');
+                window.parent.location.replace(url.toString());
+            }
+        } catch(e) {}
+    })();
+    </script>
+    """, height=0)
     show_login_view()
     st.stop()
+
+# ── 4. Logged in — keep localStorage fresh + clean tokens from URL ────────────
+_at = st.session_state.get("sb_access_token", "")
+_rt = st.session_state.get("sb_refresh_token", "")
+components.html(f"""
+<script>
+(function() {{
+    try {{
+        if ({repr(_at)}) window.parent.localStorage.setItem('pf_access',  {repr(_at)});
+        if ({repr(_rt)}) window.parent.localStorage.setItem('pf_refresh', {repr(_rt)});
+    }} catch(e) {{}}
+    var url = new URL(window.parent.location.href);
+    if (url.searchParams.has('access_token') || url.searchParams.has('refresh_token')) {{
+        url.searchParams.delete('access_token');
+        url.searchParams.delete('refresh_token');
+        window.parent.history.replaceState({{}}, '', url.toString());
+    }}
+}})();
+</script>
+""", height=0)
 
 if not has_access():
     show_paywall_view()
