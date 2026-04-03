@@ -6,10 +6,12 @@ import base64
 import shutil
 import hashlib
 from datetime import datetime
+
 import anthropic
 import streamlit as st
 import pdfplumber
 from dotenv import load_dotenv
+from supabase import create_client
 
 load_dotenv()
 
@@ -17,10 +19,13 @@ MODEL      = "claude-opus-4-6"
 api_key    = os.getenv("ANTHROPIC_API_KEY", "")
 APP_DIR    = os.path.dirname(__file__)
 
-# Use /data (HF persistent bucket) when available, else fall back to app dir
 DATA_DIR   = "/data" if os.path.isdir("/data") else APP_DIR
 MASTER_DIR = os.path.join(DATA_DIR, "master_uploads")
 os.makedirs(MASTER_DIR, exist_ok=True)
+
+SUPABASE_URL      = os.getenv("SUPABASE_URL", "https://mqqbdkmjfameufouhewa.supabase.co")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1xcWJka21qZmFtZXVmb3VoZXdhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUyMDc1MTIsImV4cCI6MjA5MDc4MzUxMn0.omtDKGLnqg8AE3xb_AvDLx7enjUAhFdXM-QhJV_xn4w")
+LOVABLE_URL       = os.getenv("LOVABLE_URL", "https://your-permitfix-app.lovable.app")
 
 IMAGE_TYPES = ["png", "jpg", "jpeg", "webp", "gif"]
 MEDIA_TYPE_MAP = {
@@ -35,12 +40,12 @@ st.set_page_config(
     layout="wide",
 )
 
-# ── Modern CSS ────────────────────────────────────────────────────────────────
+# ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-[data-testid="stHeader"]        { display: none !important; }
+[data-testid="stHeader"]          { display: none !important; }
 [data-testid="InputInstructions"] { display: none !important; }
-[data-testid="stSidebar"]       { display: none !important; }
+[data-testid="stSidebar"]         { display: none !important; }
 
 .block-container {
     padding: 1.8rem 2.5rem !important;
@@ -146,69 +151,290 @@ hr { border-color: #e2e8f0 !important; margin: 1.2rem 0 !important; }
     border-top: 1px solid #e2e8f0;
 }
 
-/* Back button looks like a link */
-button[data-testid="baseButton-secondary"]:has(span:contains("←")) {
-    background: transparent !important;
-    border: none !important;
-    color: #64748b !important;
-    padding-left: 0 !important;
+/* User bar */
+.user-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.78rem;
+    color: #64748b;
+    margin-bottom: 0.5rem;
+    justify-content: flex-end;
 }
+.plan-badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 20px;
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+.plan-monthly { background: #dcfce7; color: #166534; }
+.plan-credits { background: #dbeafe; color: #1e40af; }
+.plan-none    { background: #fee2e2; color: #991b1b; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ── IP-based user namespace ───────────────────────────────────────────────────
+# ── Supabase (one client per browser session) ─────────────────────────────────
 
-def get_user_namespace() -> str:
-    """Derive a stable, per-device namespace from the client IP address."""
-    if "_user_ns" in st.session_state:
-        return st.session_state._user_ns
+def get_sb():
+    if "sb_client" not in st.session_state:
+        st.session_state.sb_client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    return st.session_state.sb_client
 
-    ip = ""
+
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+
+def do_login(email: str, password: str) -> bool:
     try:
-        h = st.context.headers
-        ip = (
-            h.get("X-Forwarded-For") or
-            h.get("X-Real-Ip") or
-            h.get("Remote-Addr") or ""
-        )
-        ip = ip.split(",")[0].strip()
+        res = get_sb().auth.sign_in_with_password({"email": email.strip(), "password": password})
+        st.session_state.sb_user = res.user
+        st.session_state.pop("subscription", None)   # clear cached subscription
+        return True
+    except Exception as e:
+        msg = str(e)
+        if "Invalid login" in msg or "invalid_grant" in msg or "credentials" in msg.lower():
+            st.error("Invalid email or password.")
+        else:
+            st.error(f"Login error: {msg}")
+        return False
+
+
+def do_logout():
+    try:
+        get_sb().auth.sign_out()
+    except Exception:
+        pass
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+
+
+def send_password_reset(email: str):
+    try:
+        get_sb().auth.reset_password_email(email.strip())
+        return True
+    except Exception:
+        return False
+
+
+# ── Subscription check ────────────────────────────────────────────────────────
+
+def get_subscription() -> dict:
+    """Cached per-session. Returns dict with status, plan_type, submissions_remaining."""
+    if "subscription" in st.session_state:
+        return st.session_state.subscription
+
+    user = st.session_state.get("sb_user")
+    if not user:
+        return {"status": "none"}
+
+    try:
+        res = get_sb().table("stripe_customers").select("*").eq("user_id", user.id).execute()
+        if res.data:
+            d   = res.data[0]
+            sub = {
+                "status":                d.get("subscription_status", "inactive"),
+                "plan_type":             d.get("plan_type", "per_submission"),
+                "submissions_remaining": d.get("submissions_remaining", 0),
+            }
+        else:
+            sub = {"status": "none", "plan_type": None, "submissions_remaining": 0}
+    except Exception as e:
+        sub = {"status": "error", "error": str(e)}
+
+    st.session_state.subscription = sub
+    return sub
+
+
+def has_access() -> bool:
+    sub = get_subscription()
+    if sub["status"] == "active":                                         return True
+    if sub.get("plan_type") == "per_submission" and \
+       sub.get("submissions_remaining", 0) > 0:                           return True
+    return False
+
+
+def deduct_submission():
+    """Subtract one credit when creating a project on a per_submission plan."""
+    sub = get_subscription()
+    if sub.get("plan_type") != "per_submission":
+        return
+    user      = st.session_state.sb_user
+    new_count = max(0, sub.get("submissions_remaining", 1) - 1)
+    try:
+        get_sb().table("stripe_customers") \
+            .update({"submissions_remaining": new_count}) \
+            .eq("user_id", user.id) \
+            .execute()
+        st.session_state.subscription["submissions_remaining"] = new_count
     except Exception:
         pass
 
-    if ip and ip not in ("127.0.0.1", "::1", ""):
-        ns = hashlib.sha256(ip.encode()).hexdigest()[:16]
-    else:
-        # Local dev fallback — stable for this browser session
-        ns = str(uuid.uuid4()).replace("-", "")[:16]
 
-    st.session_state._user_ns = ns
-    return ns
+# ── Login view ────────────────────────────────────────────────────────────────
+
+def show_login_view():
+    _, col, _ = st.columns([1, 1.4, 1])
+    with col:
+        st.markdown("""
+        <div class="app-header" style="margin-bottom:1.5rem">
+          <div>
+            <div class="app-title">🏗️ PermitFix AI</div>
+            <div class="app-subtitle">Ontario Building Code compliance — Beta</div>
+          </div>
+          <div class="app-byline">Brought to you by 77Inc</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ── Primary CTA: new users ────────────────────────────────────────────
+        st.markdown(
+            "<p style='font-size:0.95rem;color:#1e293b;font-weight:600;"
+            "margin-bottom:0.3rem'>Don't have an account?</p>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<p style='font-size:0.83rem;color:#64748b;margin-bottom:0.75rem'>"
+            "Get instant access for <strong>$20/submission</strong> or "
+            "<strong>$77/month</strong> unlimited. Your login credentials "
+            "are emailed to you after payment.</p>",
+            unsafe_allow_html=True,
+        )
+        st.link_button(
+            "🏗️  Get Access — Starting at $20",
+            LOVABLE_URL,
+            use_container_width=True,
+            type="primary",
+        )
+
+        st.markdown(
+            "<p style='text-align:center;font-size:0.78rem;color:#94a3b8;"
+            "margin:0.8rem 0'>── Already have an account? Sign in below ──</p>",
+            unsafe_allow_html=True,
+        )
+
+        # ── Secondary: returning customers ────────────────────────────────────
+        with st.container(border=True):
+            email    = st.text_input("Email", key="login_email",
+                                     placeholder="you@firm.com")
+            password = st.text_input("Password", key="login_password",
+                                     type="password", placeholder="••••••••")
+
+            if st.button("Sign In", use_container_width=True):
+                if email and password:
+                    if do_login(email, password):
+                        st.session_state.view = "home"
+                        st.rerun()
+                else:
+                    st.error("Please enter your email and password.")
+
+            if st.button("Forgot password?", use_container_width=True,
+                         key="forgot_btn"):
+                if email:
+                    if send_password_reset(email):
+                        st.success("Reset link sent — check your inbox.")
+                    else:
+                        st.error("Could not send reset email.")
+                else:
+                    st.warning("Enter your email above first.")
+
+
+# ── Paywall view ──────────────────────────────────────────────────────────────
+
+def show_paywall_view():
+    sub        = get_subscription()
+    user       = st.session_state.sb_user
+    user_email = user.email if user else ""
+
+    _, col, _ = st.columns([1, 1.4, 1])
+    with col:
+        st.markdown("""
+        <div class="app-header" style="margin-bottom:1.5rem">
+          <div>
+            <div class="app-title">🏗️ PermitFix AI</div>
+            <div class="app-subtitle">Ontario Building Code compliance — Beta</div>
+          </div>
+          <div class="app-byline">Brought to you by 77Inc</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Status message
+        if sub.get("plan_type") == "per_submission" and \
+           sub.get("submissions_remaining", 0) == 0:
+            st.warning(
+                f"**{user_email}** — you have **0 submissions remaining**. "
+                "Purchase another to continue.",
+                icon="⚠️",
+            )
+        elif sub["status"] in ("inactive", "none", "cancelled"):
+            st.info(
+                f"**{user_email}** — your account doesn't have an active plan yet.",
+                icon="ℹ️",
+            )
+        else:
+            st.warning(
+                f"**{user_email}** — subscription status: **{sub['status']}**",
+                icon="⚠️",
+            )
+
+        st.markdown(
+            "<p style='font-size:0.85rem;color:#64748b;margin:0.5rem 0 0.25rem'>"
+            "Choose a plan to get access:</p>",
+            unsafe_allow_html=True,
+        )
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown(
+                "<div style='border:1px solid #e2e8f0;border-radius:10px;"
+                "padding:0.9rem 1rem;background:white'>"
+                "<p style='font-size:1rem;font-weight:700;margin:0'>$20</p>"
+                "<p style='font-size:0.78rem;color:#64748b;margin:0.1rem 0 0'>Per submission · One project</p>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+        with c2:
+            st.markdown(
+                "<div style='border:2px solid #1b5e40;border-radius:10px;"
+                "padding:0.9rem 1rem;background:white'>"
+                "<p style='font-size:1rem;font-weight:700;margin:0'>$77<span style='font-size:0.7rem;font-weight:400;color:#64748b'>/mo</span></p>"
+                "<p style='font-size:0.78rem;color:#64748b;margin:0.1rem 0 0'>Unlimited · Best for firms</p>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
+        st.link_button("Get Access →", LOVABLE_URL,
+                       type="primary", use_container_width=True)
+
+        if st.button("Log out", key="paywall_logout"):
+            do_logout()
+            st.rerun()
+
+
+# ── User namespace (Supabase user ID → filesystem namespace) ──────────────────
+
+def get_user_id() -> str:
+    user = st.session_state.get("sb_user")
+    if user:
+        return user.id.replace("-", "")[:16]
+    return str(uuid.uuid4()).replace("-", "")[:16]
 
 
 def get_projects_dir() -> str:
-    ns = get_user_namespace()
-    d = os.path.join(DATA_DIR, "projects", ns)
+    d = os.path.join(DATA_DIR, "projects", get_user_id())
     os.makedirs(d, exist_ok=True)
     return d
 
 
 # ── Persistence helpers ───────────────────────────────────────────────────────
 
-def project_dir(pid):
-    return os.path.join(get_projects_dir(), pid)
-
-def meta_path(pid):
-    return os.path.join(project_dir(pid), "meta.json")
-
-def chat_path(pid):
-    return os.path.join(project_dir(pid), "chat.json")
-
-def files_dir(pid):
-    return os.path.join(project_dir(pid), "files")
+def project_dir(pid):      return os.path.join(get_projects_dir(), pid)
+def meta_path(pid):        return os.path.join(project_dir(pid), "meta.json")
+def chat_path(pid):        return os.path.join(project_dir(pid), "chat.json")
+def files_dir(pid):        return os.path.join(project_dir(pid), "files")
 
 def load_all_projects():
-    pdir = get_projects_dir()
+    pdir     = get_projects_dir()
     projects = []
     for pid in os.listdir(pdir):
         mp = meta_path(pid)
@@ -239,7 +465,7 @@ def save_chat(pid, messages):
         json.dump(messages, f, indent=2)
 
 def load_project_files(pid):
-    fd = files_dir(pid)
+    fd           = files_dir(pid)
     docs, images = [], []
     if not os.path.isdir(fd):
         return docs, images
@@ -250,7 +476,7 @@ def load_project_files(pid):
         if ext == "pdf":
             try:
                 text, pages = extract_pdf_text(raw)
-                thumb = pdf_first_page_b64(raw)
+                thumb       = pdf_first_page_b64(raw)
                 if text.strip():
                     docs.append({"name": fname, "text": text,
                                  "page_count": pages, "thumb_b64": thumb})
@@ -272,8 +498,10 @@ def save_file_to_project(pid, fname, raw_bytes):
 
 def _save_to_master(fname, raw_bytes, pid):
     """Archive every uploaded file centrally for future model improvement."""
-    ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dest = os.path.join(MASTER_DIR, f"{ts}_{pid}_{fname}")
+    user       = st.session_state.get("sb_user")
+    user_tag   = user.email.replace("@", "_at_").replace(".", "_") if user else "anon"
+    ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest       = os.path.join(MASTER_DIR, f"{ts}_{user_tag}_{pid}_{fname}")
     with open(dest, "wb") as f:
         f.write(raw_bytes)
 
@@ -362,15 +590,16 @@ def stream_response(client, messages, system):
     return full
 
 
-# ── Session state ─────────────────────────────────────────────────────────────
+# ── Session state defaults ────────────────────────────────────────────────────
 
 _defaults = dict(
-    view="home",
+    view="login",
     current_pid=None,
     docs=[],
     images=[],
     messages=[],
     creating=False,
+    sb_user=None,
 )
 for _k, _v in _defaults.items():
     if _k not in st.session_state:
@@ -395,7 +624,22 @@ def go_home():
     st.session_state.creating    = False
 
 
-# ── Shared header ─────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# AUTH GATE
+# ═════════════════════════════════════════════════════════════════════════════
+
+if not st.session_state.sb_user:
+    show_login_view()
+    st.stop()
+
+if not has_access():
+    show_paywall_view()
+    st.stop()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AUTHENTICATED — shared header
+# ═════════════════════════════════════════════════════════════════════════════
 
 st.markdown("""
 <div class="app-header">
@@ -406,6 +650,34 @@ st.markdown("""
   <div class="app-byline">Brought to you by 77Inc</div>
 </div>
 """, unsafe_allow_html=True)
+
+# User bar: email, plan badge, logout
+sub        = get_subscription()
+user_email = st.session_state.sb_user.email
+
+if sub["status"] == "active":
+    badge_cls  = "plan-monthly"
+    badge_text = "Unlimited · Monthly"
+elif sub.get("plan_type") == "per_submission":
+    n          = sub.get("submissions_remaining", 0)
+    badge_cls  = "plan-credits"
+    badge_text = f"{n} submission{'s' if n != 1 else ''} remaining"
+else:
+    badge_cls  = "plan-none"
+    badge_text = "No active plan"
+
+col_email, col_badge, col_logout = st.columns([5, 2, 1])
+with col_email:
+    st.caption(f"Signed in as **{user_email}**")
+with col_badge:
+    st.markdown(
+        f'<span class="plan-badge {badge_cls}">{badge_text}</span>',
+        unsafe_allow_html=True,
+    )
+with col_logout:
+    if st.button("Log out", key="header_logout"):
+        do_logout()
+        st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -426,6 +698,16 @@ if st.session_state.view == "home":
     if st.session_state.creating:
         with st.container(border=True):
             st.markdown("**New Project**")
+
+            # Per-submission: warn if 0 credits left (shouldn't get here, but guard)
+            sub = get_subscription()
+            if sub.get("plan_type") == "per_submission":
+                n = sub.get("submissions_remaining", 0)
+                st.info(
+                    f"This will use **1 of your {n} remaining submission{'s' if n != 1 else ''}**.",
+                    icon="💳",
+                )
+
             new_name    = st.text_input("Project name *",
                                         placeholder="e.g. Smith Residence Addition")
             new_address = st.text_input("Address (optional)",
@@ -436,6 +718,15 @@ if st.session_state.view == "home":
                 if st.button("Create Project", type="primary",
                              use_container_width=True):
                     if new_name.strip():
+                        # Guard: re-check credits before creating
+                        sub = get_subscription()
+                        if sub.get("plan_type") == "per_submission" and \
+                           sub.get("submissions_remaining", 0) <= 0:
+                            st.error("No submissions remaining. Please purchase more.")
+                            st.stop()
+
+                        deduct_submission()
+
                         pid  = str(uuid.uuid4())[:8]
                         meta = dict(id=pid, name=new_name.strip(),
                                     address=new_address.strip(),
@@ -491,7 +782,7 @@ if st.session_state.view == "home":
                     st.rerun()
 
     if not api_key or api_key == "your_api_key_here":
-        st.error("⚠️ Set ANTHROPIC_API_KEY in your .env file to enable AI analysis.")
+        st.error("⚠️ Set ANTHROPIC_API_KEY in your HF Space secrets to enable AI analysis.")
 
     st.markdown(
         '<div class="footer">Ontario AI Permit PreChecker · Brought to you by 77Inc</div>',
@@ -500,14 +791,13 @@ if st.session_state.view == "home":
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# PROJECT VIEW — chat only, no inner dashboard tab
+# PROJECT VIEW
 # ═════════════════════════════════════════════════════════════════════════════
 
 else:
     pid  = st.session_state.current_pid
     meta = load_meta(pid)
 
-    # Top bar
     col_back, col_title, col_status = st.columns([1, 4, 2])
     with col_back:
         if st.button("← Projects"):
@@ -530,7 +820,7 @@ else:
 
     st.divider()
 
-    # ── File attach area (above chat) ─────────────────────────────────────────
+    # ── File attach area ──────────────────────────────────────────────────────
     existing_names = (
         {d["name"] for d in st.session_state.docs} |
         {i["name"] for i in st.session_state.images}
@@ -600,18 +890,13 @@ else:
             f'<span class="file-pill">📄 {n}</span>'
             for n in sorted(existing_names)
         )
-        st.markdown(
-            f'<div class="file-pills">{pills}</div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown(f'<div class="file-pills">{pills}</div>', unsafe_allow_html=True)
 
     # ── Chat ──────────────────────────────────────────────────────────────────
-    # Render history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Empty-state hint
     if not st.session_state.messages:
         if not existing_names:
             st.info(
@@ -621,7 +906,6 @@ else:
         else:
             st.info("Files attached. Ask me to check compliance, flag issues, or cite code sections.")
 
-    # Clear button (compact, right-aligned)
     if st.session_state.messages:
         _, col_clr = st.columns([6, 1])
         with col_clr:
@@ -630,10 +914,9 @@ else:
                 save_chat(pid, [])
                 st.rerun()
 
-    # Chat input
     if prompt := st.chat_input("Ask about compliance, setbacks, OBC code citations…"):
         if not api_key or api_key == "your_api_key_here":
-            st.error("Set ANTHROPIC_API_KEY in your .env file first.")
+            st.error("Set ANTHROPIC_API_KEY in your HF Space secrets first.")
             st.stop()
 
         st.session_state.messages.append({"role": "user", "content": prompt})
