@@ -61,6 +61,19 @@ st.set_page_config(
 import streamlit.components.v1 as components
 components.html("""
 <script>
+// ── Inject hide-chrome CSS into parent as early as possible ──────────────────
+(function() {
+    var s = document.createElement('style');
+    s.textContent = [
+        '[data-testid="stHeader"],[data-testid="stToolbar"],[data-testid="stDecoration"],',
+        '[data-testid="stStatusWidget"],[data-testid="stToolbarActions"],',
+        '[data-testid="stBaseButton-header"],button[kind="header"],',
+        '#MainMenu,footer,.stDeployButton { display:none !important; }'
+    ].join('');
+    window.parent.document.head.appendChild(s);
+})();
+</script>
+<script>
 (function() {
     var hash = window.parent.location.hash;
     if (!hash || hash.length < 2) return;
@@ -89,19 +102,20 @@ components.html("""
 st.markdown("""
 <style>
 /* ── Hide all Streamlit chrome ── */
-[data-testid="stHeader"]             { display: none !important; }
-[data-testid="InputInstructions"]    { display: none !important; }
-[data-testid="stSidebar"]            { display: none !important; }
-[data-testid="stToolbar"]            { display: none !important; }
-[data-testid="stDecoration"]         { display: none !important; }
-[data-testid="stStatusWidget"]       { display: none !important; }
-#MainMenu                            { display: none !important; }
-footer                               { display: none !important; }
-.stDeployButton                      { display: none !important; }
-/* Running/stop button */
-[data-testid="stAppViewBlockContainer"] > div:first-child
-                                     { margin-top: 0 !important; }
+[data-testid="stHeader"],
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+[data-testid="stToolbarActions"],
+[data-testid="stBaseButton-header"],
+[data-testid="InputInstructions"],
+[data-testid="stSidebar"],
+#MainMenu, footer,
+.stDeployButton,
 button[kind="header"]                { display: none !important; }
+/* Running man / stop button (Streamlit 1.40+) */
+[data-testid="stAppRunningMan"]      { display: none !important; }
+iframe[title="streamlit_analytics"]  { display: none !important; }
 /* Loading spinner overlay */
 .stSpinner > div                     { border-top-color: #1b5e40 !important; }
 
@@ -360,15 +374,14 @@ def deduct_submission():
 def show_login_view():
     _, col, _ = st.columns([1, 1.4, 1])
     with col:
-        st.markdown("""
-        <div class="app-header" style="margin-bottom:1.5rem">
-          <div>
-            <div class="app-title">🏗️ PermitFix AI</div>
-            <div class="app-subtitle">Ontario Building Code compliance — Beta</div>
-          </div>
-          <div class="app-byline">Brought to you by 77Inc</div>
-        </div>
-        """, unsafe_allow_html=True)
+        # Logo
+        _logo = _PILImage.open(os.path.join(APP_DIR, "logo.png"))
+        st.image(_logo, use_container_width=True)
+        st.markdown(
+            "<p style='text-align:center;font-size:0.8rem;color:#94a3b8;"
+            "margin:-0.5rem 0 1.2rem'>Ontario Building Code compliance — Beta</p>",
+            unsafe_allow_html=True,
+        )
 
         auth_error = st.query_params.get("auth_error", "")
         if auth_error:
@@ -424,15 +437,13 @@ def show_paywall_view():
 
     _, col, _ = st.columns([1, 1.4, 1])
     with col:
-        st.markdown("""
-        <div class="app-header" style="margin-bottom:1.5rem">
-          <div>
-            <div class="app-title">🏗️ PermitFix AI</div>
-            <div class="app-subtitle">Ontario Building Code compliance — Beta</div>
-          </div>
-          <div class="app-byline">Brought to you by 77Inc</div>
-        </div>
-        """, unsafe_allow_html=True)
+        _logo = _PILImage.open(os.path.join(APP_DIR, "logo.png"))
+        st.image(_logo, use_container_width=True)
+        st.markdown(
+            "<p style='text-align:center;font-size:0.8rem;color:#94a3b8;"
+            "margin:-0.5rem 0 1.2rem'>Ontario Building Code compliance — Beta</p>",
+            unsafe_allow_html=True,
+        )
 
         # Status message
         if sub.get("plan_type") == "per_submission" and \
