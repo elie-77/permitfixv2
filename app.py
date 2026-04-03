@@ -40,9 +40,12 @@ MEDIA_TYPE_MAP = {
 }
 STATUSES = ["🔵 In Review", "🟡 Corrections Needed", "🟢 Approved", "⚫ On Hold"]
 
+from PIL import Image as _PILImage
+_icon = _PILImage.open(os.path.join(APP_DIR, "icon.png"))
+
 st.set_page_config(
-    page_title="PermitFix AI",
-    page_icon="🏗️",
+    page_title="Ontario AI Permit Check",
+    page_icon=_icon,
     layout="wide",
     menu_items={
         "Get Help": None,
