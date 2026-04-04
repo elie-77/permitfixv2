@@ -419,6 +419,13 @@ async def analyze(req: AnalyzeRequest, request: Request):
             })
             print(f"[FILES] added image {name}")
 
+    # Track paths already fetched via the files array to avoid duplicates
+    already_fetched = set()
+    for f in req.files:
+        if "path" in f:
+            from urllib.parse import unquote
+            already_fetched.add(unquote(f["path"]))
+
     # Fetch from Supabase storage if paths provided
     seen_paths = set()
     for raw_path in req.storage_paths:
@@ -426,8 +433,9 @@ async def analyze(req: AnalyzeRequest, request: Request):
         from urllib.parse import unquote
         path = unquote(raw_path)
 
-        # Deduplicate
-        if path in seen_paths:
+        # Deduplicate and skip if already fetched via files array
+        if path in seen_paths or path in already_fetched:
+            print(f"[STORAGE] skipping duplicate: {path.split('/')[-1]}")
             continue
         seen_paths.add(path)
 
