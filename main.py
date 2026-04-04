@@ -234,17 +234,22 @@ def download_from_storage(bucket: str, path: str, user_token: str = "") -> bytes
     raise Exception(f"Storage fetch failed for {bucket}/{decoded_path}")
 
 
-MAX_PDF_PAGES = 30
-MAX_PDF_CHARS = 80_000
+MAX_PDF_PAGES    = 20
+MAX_PDF_CHARS    = 80_000
+MAX_IMAGE_PAGES  = 10   # pages to render as images if scanned
+IMAGE_DPI_SCALE  = 1.5  # scale factor relative to 72dpi base
+MIN_TEXT_PER_PAGE = 80  # chars/page threshold — below this = scanned PDF
+
 
 def extract_pdf_text(file_bytes: bytes) -> tuple[str, int]:
+    """Extract text from a digitally-created PDF."""
     pages = []
     total_chars = 0
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         page_count = len(pdf.pages)
         for i, page in enumerate(pdf.pages):
             if i >= MAX_PDF_PAGES:
-                pages.append(f"[Truncated: only first {MAX_PDF_PAGES} of {page_count} pages shown]")
+                pages.append(f"[Truncated: first {MAX_PDF_PAGES} of {page_count} pages]")
                 break
             try:
                 text = page.extract_text()
@@ -257,6 +262,50 @@ def extract_pdf_text(file_bytes: bytes) -> tuple[str, int]:
                     pages.append(f"[Truncated: text limit reached at page {i+1}]")
                     break
     return "\n\n".join(pages), page_count
+
+
+def pdf_to_images(file_bytes: bytes) -> list[str]:
+    """Render PDF pages to base64 PNG images for vision analysis."""
+    import fitz  # PyMuPDF
+    images = []
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    total = len(doc)
+    print(f"[PDF→IMG] Converting {min(total, MAX_IMAGE_PAGES)} of {total} pages to images")
+    for i in range(min(total, MAX_IMAGE_PAGES)):
+        page = doc[i]
+        # Scale so longest side is ~1600px (good balance of quality vs memory)
+        rect = page.rect
+        scale = min(1600 / max(rect.width, rect.height, 1), IMAGE_DPI_SCALE)
+        mat = fitz.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        b64 = base64.b64encode(pix.tobytes("png")).decode()
+        images.append(b64)
+        pix = None  # free memory immediately
+    doc.close()
+    return images
+
+
+def process_pdf(file_bytes: bytes, name: str, doc_texts: list, image_blocks: list):
+    """Smart PDF processor: text extraction for digital PDFs, vision for scanned."""
+    text, page_count = extract_pdf_text(file_bytes)
+    chars_per_page = len(text) / max(page_count, 1)
+
+    if chars_per_page >= MIN_TEXT_PER_PAGE:
+        # Digital PDF — use extracted text
+        print(f"[PDF] Text PDF: {len(text)} chars, {page_count} pages — {name}")
+        doc_texts.append({"name": name, "text": text})
+    else:
+        # Scanned/image PDF — render pages and send to Claude vision
+        print(f"[PDF] Scanned PDF detected ({chars_per_page:.0f} chars/page) — converting to images: {name}")
+        imgs = pdf_to_images(file_bytes)
+        for idx, b64 in enumerate(imgs):
+            image_blocks.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": b64},
+            })
+        print(f"[PDF→IMG] Added {len(imgs)} page images for {name}")
+        if text.strip():
+            doc_texts.append({"name": name, "text": text})
 
 
 # ── Request/Response models ───────────────────────────────────────────────────
@@ -360,10 +409,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
 
         ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
         if ext == "pdf" or file_type == "pdf":
-            text, _ = extract_pdf_text(raw)
-            if text.strip():
-                doc_texts.append({"name": name, "text": text})
-                print(f"[FILES] extracted {len(text)} chars from {name}")
+            process_pdf(raw, name, doc_texts, image_blocks)
         elif ext in IMAGE_TYPES or file_type in IMAGE_TYPES or file_type == "image":
             b64  = base64.b64encode(raw).decode() if "data" not in f else f["data"]
             mime = MEDIA_TYPE_MAP.get(ext, "image/png")
@@ -394,9 +440,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
             ext  = name.rsplit(".", 1)[-1].lower()
             print(f"[STORAGE] fetched {name} from bucket={bucket}")
             if ext == "pdf":
-                text, _ = extract_pdf_text(raw)
-                if text.strip():
-                    doc_texts.append({"name": name, "text": text})
+                process_pdf(raw, name, doc_texts, image_blocks)
             elif ext in IMAGE_TYPES:
                 b64  = base64.b64encode(raw).decode()
                 mime = MEDIA_TYPE_MAP.get(ext, "image/png")
