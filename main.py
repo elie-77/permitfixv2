@@ -36,7 +36,7 @@ SUPABASE_ANON_KEY    = os.getenv("SUPABASE_ANON_KEY",
     "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1xcWJka21qZmFtZXVmb3VoZXdhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUyMDc1MTIsImV4cCI6MjA5MDc4MzUxMn0."
     "omtDKGLnqg8AE3xb_AvDLx7enjUAhFdXM-QhJV_xn4w")
 VOYAGE_API_KEY       = os.getenv("VOYAGE_API_KEY", "")
-MODEL                = "claude-opus-4-6"
+MODEL                = "claude-sonnet-4-5"
 EMBED_MODEL          = "voyage-large-2"
 OBC_MATCH_COUNT      = 8
 
