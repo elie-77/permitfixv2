@@ -29,13 +29,15 @@ load_dotenv()
 # ── Config ────────────────────────────────────────────────────────────────────
 
 ANTHROPIC_API_KEY    = os.getenv("ANTHROPIC_API_KEY", "")
-SUPABASE_URL         = os.getenv("SUPABASE_URL", "https://mqqbdkmjfameufouhewa.supabase.co")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
-SUPABASE_ANON_KEY    = os.getenv("SUPABASE_ANON_KEY",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1xcWJka21qZmFtZXVmb3VoZXdhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUyMDc1MTIsImV4cCI6MjA5MDc4MzUxMn0."
-    "omtDKGLnqg8AE3xb_AvDLx7enjUAhFdXM-QhJV_xn4w")
+SUPABASE_URL         = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_ANON_KEY    = os.getenv("SUPABASE_ANON_KEY", "")
 VOYAGE_API_KEY       = os.getenv("VOYAGE_API_KEY", "")
+
+# Startup diagnostics
+print(f"[STARTUP] SUPABASE_URL={SUPABASE_URL[:40] if SUPABASE_URL else 'NOT SET'}")
+print(f"[STARTUP] SUPABASE_SERVICE_KEY={'SET (' + SUPABASE_SERVICE_KEY[:20] + '...)' if SUPABASE_SERVICE_KEY else 'NOT SET'}")
+print(f"[STARTUP] SUPABASE_ANON_KEY={'SET' if SUPABASE_ANON_KEY else 'NOT SET'}")
 MODEL                = "claude-sonnet-4-5"
 EMBED_MODEL          = "voyage-large-2"
 OBC_MATCH_COUNT      = 8
