@@ -201,27 +201,37 @@ def build_system_blocks(doc_texts: list[dict], obc_chunks: list[dict]) -> list[d
     return blocks
 
 
-def download_from_storage(bucket: str, path: str) -> bytes:
-    """Download a file from Supabase storage via REST API, bypassing supabase-py client."""
+def download_from_storage(bucket: str, path: str, user_token: str = "") -> bytes:
+    """Download a file from Supabase storage via REST API."""
     from urllib.parse import unquote, quote
     import httpx
-    # Decode then re-encode properly for the URL
     decoded_path = unquote(path)
     encoded_path = quote(decoded_path, safe="/")
-    url = f"{SUPABASE_URL}/storage/v1/object/{bucket}/{encoded_path}"
-    print(f"[STORAGE] GET {url}")
-    resp = httpx.get(
-        url,
-        headers={
-            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-            "apikey": SUPABASE_SERVICE_KEY,
-        },
-        timeout=30,
-        follow_redirects=True,
-    )
-    if resp.status_code != 200:
-        raise Exception(f"Storage HTTP {resp.status_code}: {resp.text[:200]}")
-    return resp.content
+
+    # Try service key first, then fall back to user token
+    tokens_to_try = []
+    if SUPABASE_SERVICE_KEY:
+        tokens_to_try.append(("service", SUPABASE_SERVICE_KEY))
+    if user_token:
+        tokens_to_try.append(("user", user_token))
+
+    for label, token in tokens_to_try:
+        url = f"{SUPABASE_URL}/storage/v1/object/{bucket}/{encoded_path}"
+        print(f"[STORAGE] GET {url} (auth={label})")
+        resp = httpx.get(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "apikey": SUPABASE_ANON_KEY,
+            },
+            timeout=30,
+            follow_redirects=True,
+        )
+        print(f"[STORAGE] Response {resp.status_code}: {resp.text[:100] if resp.status_code != 200 else 'OK'}")
+        if resp.status_code == 200:
+            return resp.content
+
+    raise Exception(f"Storage fetch failed for {bucket}/{decoded_path}")
 
 
 def extract_pdf_text(file_bytes: bytes) -> tuple[str, int]:
@@ -324,7 +334,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
             file_path = f["path"]
             print(f"[FILES] fetching from storage bucket={bucket} path={file_path}")
             try:
-                raw = download_from_storage(bucket, file_path)
+                raw = download_from_storage(bucket, file_path, user_token=token)
             except Exception as e:
                 print(f"[FILES] storage fetch error: {e}")
                 continue
@@ -365,7 +375,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
         file_path = path  # full path within the bucket
 
         try:
-            raw  = download_from_storage(bucket, file_path)
+            raw  = download_from_storage(bucket, file_path, user_token=token)
             name = unquote(path.split("/")[-1])
             ext  = name.rsplit(".", 1)[-1].lower()
             print(f"[STORAGE] fetched {name} from bucket={bucket}")
