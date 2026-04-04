@@ -234,14 +234,28 @@ def download_from_storage(bucket: str, path: str, user_token: str = "") -> bytes
     raise Exception(f"Storage fetch failed for {bucket}/{decoded_path}")
 
 
+MAX_PDF_PAGES = 30
+MAX_PDF_CHARS = 80_000
+
 def extract_pdf_text(file_bytes: bytes) -> tuple[str, int]:
     pages = []
+    total_chars = 0
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         page_count = len(pdf.pages)
-        for page in pdf.pages:
-            text = page.extract_text()
+        for i, page in enumerate(pdf.pages):
+            if i >= MAX_PDF_PAGES:
+                pages.append(f"[Truncated: only first {MAX_PDF_PAGES} of {page_count} pages shown]")
+                break
+            try:
+                text = page.extract_text()
+            except Exception:
+                continue
             if text:
                 pages.append(text.strip())
+                total_chars += len(text)
+                if total_chars >= MAX_PDF_CHARS:
+                    pages.append(f"[Truncated: text limit reached at page {i+1}]")
+                    break
     return "\n\n".join(pages), page_count
 
 
