@@ -291,6 +291,9 @@ async def analyze(req: AnalyzeRequest, request: Request):
     for f in req.files:
         name      = f.get("name", "file")
         file_type = f.get("type", "pdf")
+        if "data" not in f:
+            print(f"[FILES] skipping {name} — no data field, keys={list(f.keys())}")
+            continue
         raw       = base64.b64decode(f["data"])
 
         if file_type == "pdf":
