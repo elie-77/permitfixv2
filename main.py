@@ -306,11 +306,29 @@ async def analyze(req: AnalyzeRequest, request: Request):
             })
 
     # Fetch from Supabase storage if paths provided
-    for path in req.storage_paths:
+    seen_paths = set()
+    for raw_path in req.storage_paths:
+        # URL-decode the path
+        from urllib.parse import unquote
+        path = unquote(raw_path)
+
+        # Deduplicate
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+
+        # Extract bucket (first segment) and file path (rest)
+        parts = path.split("/", 1)
+        if len(parts) == 2:
+            bucket, file_path = parts[0], parts[1]
+        else:
+            bucket, file_path = "projects", path
+
         try:
-            raw  = sb.storage.from_("permit-files").download(path)
-            name = path.split("/")[-1]
+            raw  = sb.storage.from_(bucket).download(file_path)
+            name = unquote(file_path.split("/")[-1])
             ext  = name.rsplit(".", 1)[-1].lower()
+            print(f"[STORAGE] fetched {name} from bucket={bucket}")
             if ext == "pdf":
                 text, _ = extract_pdf_text(raw)
                 if text.strip():
