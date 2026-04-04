@@ -424,44 +424,68 @@ def show_login_view():
         )
         st.markdown("<div class='login-card'>", unsafe_allow_html=True)
 
-        auth_error = st.query_params.get("auth_error", "")
-        if auth_error:
-            st.query_params.clear()
-            st.error("Your login link has expired or is no longer valid.", icon="🔒")
-            st.link_button(
-                "Get a new login link →",
-                LOVABLE_URL + "/login",
-                use_container_width=True,
-                type="primary",
-            )
-        else:
+        # Tab: Sign In / Sign Up
+        tab_in, tab_up = st.tabs(["Sign In", "Create Account"])
+
+        with tab_in:
+            st.markdown("<div style='height:0.25rem'></div>", unsafe_allow_html=True)
+            email_in = st.text_input("Email", key="login_email",
+                                     placeholder="you@example.com")
+            pass_in  = st.text_input("Password", type="password", key="login_pass",
+                                     placeholder="Your password")
+            if st.button("Sign In", type="primary", use_container_width=True,
+                         key="btn_signin"):
+                if email_in and pass_in:
+                    if do_login(email_in, pass_in):
+                        st.rerun()
+                else:
+                    st.error("Please enter your email and password.")
+
+        with tab_up:
+            st.markdown("<div style='height:0.25rem'></div>", unsafe_allow_html=True)
             st.markdown(
-                "<p style='font-size:1.05rem;font-weight:700;color:#111827;"
-                "margin:0 0 0.3rem'>Welcome back</p>"
-                "<p style='font-size:0.83rem;color:#6b7280;margin:0 0 1.25rem'>"
-                "Sign in with the magic link from your email, or request a new one below.</p>",
+                "<p style='font-size:0.8rem;color:#6b7280;margin:0 0 0.75rem'>"
+                "Create your account — then choose a plan to get started.</p>",
                 unsafe_allow_html=True,
             )
-            st.link_button(
-                "✉️  Sign in at permitfix.ca",
-                LOVABLE_URL + "/login",
-                use_container_width=True,
-                type="primary",
-            )
-            st.markdown(
-                "<div style='text-align:center;margin:1rem 0 0.75rem;"
-                "font-size:0.78rem;color:#9ca3af'>— or —</div>",
-                unsafe_allow_html=True,
-            )
-            st.link_button(
-                "Get Access — Starting at $20",
-                LOVABLE_URL,
-                use_container_width=True,
-            )
+            email_up  = st.text_input("Email", key="signup_email",
+                                      placeholder="you@example.com")
+            pass_up   = st.text_input("Password", type="password", key="signup_pass",
+                                      placeholder="Choose a password (8+ characters)")
+            pass_up2  = st.text_input("Confirm password", type="password",
+                                      key="signup_pass2", placeholder="Repeat password")
+            if st.button("Create Account", type="primary", use_container_width=True,
+                         key="btn_signup"):
+                if not email_up or not pass_up:
+                    st.error("Please fill in all fields.")
+                elif len(pass_up) < 8:
+                    st.error("Password must be at least 8 characters.")
+                elif pass_up != pass_up2:
+                    st.error("Passwords don't match.")
+                else:
+                    try:
+                        res = get_sb().auth.sign_up(
+                            {"email": email_up.strip(), "password": pass_up}
+                        )
+                        if res.user:
+                            # Auto sign-in after signup
+                            if do_login(email_up, pass_up):
+                                st.rerun()
+                        else:
+                            st.error("Could not create account. Try a different email.")
+                    except Exception as e:
+                        msg = str(e)
+                        if "already registered" in msg.lower() or "already exists" in msg.lower():
+                            st.error("An account with this email already exists. Sign in instead.")
+                        else:
+                            st.error(f"Sign up error: {msg}")
+
         st.markdown("</div>", unsafe_allow_html=True)
         st.markdown(
-            "<p style='text-align:center;font-size:0.72rem;color:#d1d5db;margin-top:1rem'>"
-            "Ontario Building Code compliance — Beta · PermitFix by 77Inc</p>",
+            f"<p style='text-align:center;font-size:0.72rem;color:#d1d5db;margin-top:1rem'>"
+            f"Don't have a plan yet? "
+            f"<a href='{LOVABLE_URL}' style='color:#1a5e40;text-decoration:none'>"
+            f"View pricing →</a></p>",
             unsafe_allow_html=True,
         )
 
