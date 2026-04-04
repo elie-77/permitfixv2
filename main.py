@@ -528,10 +528,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
 
 
 @app.post("/generate-pdf")
-async def generate_pdf(req: GeneratePdfRequest, request: Request):
-    token = get_bearer(request)
-    verify_token(token)  # auth check only, no credit deduction for PDF
-
+async def generate_pdf(req: GeneratePdfRequest):
     pdf_bytes = _build_pdf(req.project_name, req.messages, req.doc_names)
     return Response(
         content=pdf_bytes,
