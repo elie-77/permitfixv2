@@ -87,7 +87,7 @@ def verify_token(token: str) -> dict:
             timeout=10,
         )
         if resp.status_code != 200:
-            raise HTTPException(status_code=401, detail="Invalid token")
+            raise HTTPException(status_code=401, detail=f"Supabase rejected token: {resp.status_code} {resp.text}")
         data = resp.json()
         return {"id": data["id"], "email": data["email"]}
     except HTTPException:
