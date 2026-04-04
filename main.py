@@ -148,13 +148,18 @@ def search_obc(query: str) -> list[dict]:
     if not vo:
         return []
     try:
-        res = vo.embed([query], model=EMBED_MODEL, input_type="query")
-        embedding = res.embeddings[0]
-        rows = sb.rpc("match_obc_sections", {
-            "query_embedding": embedding,
-            "match_count": OBC_MATCH_COUNT,
-        }).execute()
-        return rows.data or []
+        import concurrent.futures
+        def _search():
+            res = vo.embed([query], model=EMBED_MODEL, input_type="query")
+            embedding = res.embeddings[0]
+            rows = sb.rpc("match_obc_sections", {
+                "query_embedding": embedding,
+                "match_count": OBC_MATCH_COUNT,
+            }).execute()
+            return rows.data or []
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(_search)
+            return future.result(timeout=5)  # fail fast after 5s
     except Exception as e:
         print(f"OBC search error: {e}")
         return []
@@ -191,7 +196,7 @@ def build_system_blocks(doc_texts: list[dict], obc_chunks: list[dict]) -> list[d
         })
 
     if doc_texts:
-        kb = "\n\n".join(f"=== {d['name']} ===\n{d['text']}" for d in doc_texts)
+        kb = "\n\n".join(f"=== {d['name']} ===\n{d['text'][:20000]}" for d in doc_texts)
         blocks.append({
             "type": "text",
             "text": f"<project_documents>\n{kb}\n</project_documents>",
