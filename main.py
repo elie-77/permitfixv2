@@ -230,7 +230,14 @@ OBC_EXPERT_SYSTEM = (
     "## FORMAT RULES:\n"
     "1. Number all sections (1., 2., 3. etc.) and all findings within sections (C1, C2, I1, I2).\n"
     "2. Use minimal emojis — only: ✅ (compliant), ❌ (critical), ⚠️ (important), ℹ️ (advisory), "
-    "📋 (reference). No decorative or expressive emojis."
+    "📋 (reference). No decorative or expressive emojis.\n"
+    "3. CHECKLIST FORMATTING — for any checklist (Permit Submission Checklist, Drawing Checklist, "
+    "or any other checklist), every line item MUST use exactly one of these three symbols:\n"
+    "   ✅ = already present/included in submitted documents, no action needed (GREEN)\n"
+    "   🟡 = needs review, conditional, or only applicable in certain cases (YELLOW)\n"
+    "   ❌ = missing or non-compliant, must be corrected before permit can be issued (RED)\n"
+    "Never use any other symbol on checklist items. Always assess each item against the "
+    "submitted documents and assign the correct symbol — do not default everything to one colour."
 )
 
 
