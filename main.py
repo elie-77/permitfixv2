@@ -15,7 +15,6 @@ import time
 from typing import AsyncGenerator
 
 import anthropic
-import pdfplumber
 import voyageai
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -34,10 +33,6 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_
 SUPABASE_ANON_KEY    = os.getenv("SUPABASE_ANON_KEY", "")
 VOYAGE_API_KEY       = os.getenv("VOYAGE_API_KEY", "")
 
-# Startup diagnostics
-print(f"[STARTUP] SUPABASE_URL={SUPABASE_URL[:40] if SUPABASE_URL else 'NOT SET'}")
-print(f"[STARTUP] SUPABASE_SERVICE_KEY={'SET (' + SUPABASE_SERVICE_KEY[:20] + '...)' if SUPABASE_SERVICE_KEY else 'NOT SET'}")
-print(f"[STARTUP] SUPABASE_ANON_KEY={'SET' if SUPABASE_ANON_KEY else 'NOT SET'}")
 MODEL                = "claude-opus-4-5"
 EMBED_MODEL          = "voyage-large-2"  # 1536-dim, matches DB and load_obc.py
 OBC_MATCH_COUNT      = 8
@@ -334,7 +329,6 @@ def pdf_to_images(file_bytes: bytes) -> list[str]:
     images = []
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     total = len(doc)
-    print(f"[PDF→IMG] Converting {min(total, MAX_IMAGE_PAGES)} of {total} pages to images")
     for i in range(min(total, MAX_IMAGE_PAGES)):
         page = doc[i]
         # Scale so longest side is ~1600px (good balance of quality vs memory)
@@ -355,19 +349,14 @@ def process_pdf(file_bytes: bytes, name: str, doc_texts: list, image_blocks: lis
     chars_per_page = len(text) / max(page_count, 1)
 
     if chars_per_page >= MIN_TEXT_PER_PAGE:
-        # Digital PDF — use extracted text
-        print(f"[PDF] Text PDF: {len(text)} chars, {page_count} pages — {name}")
         doc_texts.append({"name": name, "text": text})
     else:
-        # Scanned/image PDF — render pages and send to Claude vision
-        print(f"[PDF] Scanned PDF detected ({chars_per_page:.0f} chars/page) — converting to images: {name}")
         imgs = pdf_to_images(file_bytes)
-        for idx, b64 in enumerate(imgs):
+        for b64 in imgs:
             image_blocks.append({
                 "type": "image",
                 "source": {"type": "base64", "media_type": "image/png", "data": b64},
             })
-        print(f"[PDF→IMG] Added {len(imgs)} page images for {name}")
         if text.strip():
             doc_texts.append({"name": name, "text": text})
 
@@ -402,34 +391,6 @@ async def health():
     return {"status": "ok", "service": "permitfix-api"}
 
 
-@app.get("/debug")
-async def debug(request: Request):
-    """Temporary debug endpoint — remove after fixing."""
-    token = get_bearer(request)
-    # 1. Which Supabase are we hitting?
-    supabase_url = SUPABASE_URL
-    # 2. Validate token
-    import httpx
-    auth_resp = httpx.get(
-        f"{SUPABASE_URL}/auth/v1/user",
-        headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_ANON_KEY},
-        timeout=10,
-    )
-    user_data = auth_resp.json() if auth_resp.status_code == 200 else {"error": auth_resp.text}
-    user_id = user_data.get("id", "unknown")
-    # 3. Check stripe_customers
-    try:
-        res = sb.table("stripe_customers").select("*").eq("user_id", user_id).execute()
-        stripe_data = res.data
-    except Exception as e:
-        stripe_data = f"ERROR: {e}"
-    return {
-        "supabase_url": supabase_url,
-        "token_status": auth_resp.status_code,
-        "user": user_data,
-        "stripe_customers": stripe_data,
-    }
-
 
 @app.post("/analyze")
 async def analyze(req: AnalyzeRequest, request: Request):
@@ -439,12 +400,6 @@ async def analyze(req: AnalyzeRequest, request: Request):
 
     if not check_access(user["id"], user.get("email", "")):
         raise HTTPException(status_code=402, detail="No active subscription or credits remaining.")
-
-    # ── Debug: log what was received ─────────────────────────────────────────
-    print(f"[ANALYZE] message={req.message!r}")
-    print(f"[ANALYZE] files count={len(req.files)}")
-    print(f"[ANALYZE] storage_paths={req.storage_paths}")
-    print(f"[ANALYZE] project_id={req.project_id!r}")
 
     # ── Decode files ─────────────────────────────────────────────────────────
     doc_texts: list[dict] = []
@@ -459,16 +414,14 @@ async def analyze(req: AnalyzeRequest, request: Request):
         if "data" not in f and "bucket" in f and "path" in f:
             bucket    = f["bucket"]
             file_path = f["path"]
-            print(f"[FILES] fetching from storage bucket={bucket} path={file_path}")
             try:
                 raw = download_from_storage(bucket, file_path, user_token=token)
             except Exception as e:
-                print(f"[FILES] storage fetch error: {e}")
+                print(f"Error fetching file {name}: {e}")
                 continue
         elif "data" in f:
             raw = base64.b64decode(f["data"])
         else:
-            print(f"[FILES] skipping {name} — unrecognised format, keys={list(f.keys())}")
             continue
 
         ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
@@ -481,7 +434,6 @@ async def analyze(req: AnalyzeRequest, request: Request):
                 "type": "image",
                 "source": {"type": "base64", "media_type": mime, "data": b64},
             })
-            print(f"[FILES] added image {name}")
 
     # Track paths already fetched via the files array to avoid duplicates
     already_fetched = set()
@@ -499,7 +451,6 @@ async def analyze(req: AnalyzeRequest, request: Request):
 
         # Deduplicate and skip if already fetched via files array
         if path in seen_paths or path in already_fetched:
-            print(f"[STORAGE] skipping duplicate: {path.split('/')[-1]}")
             continue
         seen_paths.add(path)
 
@@ -510,7 +461,6 @@ async def analyze(req: AnalyzeRequest, request: Request):
             raw  = download_from_storage(bucket, file_path, user_token=token)
             name = unquote(path.split("/")[-1])
             ext  = name.rsplit(".", 1)[-1].lower()
-            print(f"[STORAGE] fetched {name} from bucket={bucket}")
             if ext == "pdf":
                 process_pdf(raw, name, doc_texts, image_blocks)
             elif ext in IMAGE_TYPES:
@@ -521,7 +471,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
                     "source": {"type": "base64", "media_type": mime, "data": b64},
                 })
         except Exception as e:
-            print(f"Storage fetch error for {path}: {e}")
+            print(f"Error fetching storage path {path}: {e}")
 
     # ── OBC search ────────────────────────────────────────────────────────────
     obc_chunks = search_obc(req.message)
@@ -550,7 +500,6 @@ async def analyze(req: AnalyzeRequest, request: Request):
     # ── Stream response ───────────────────────────────────────────────────────
     async def generate() -> AsyncGenerator[str, None]:
         try:
-            print(f"[STREAM] Starting — model={MODEL}, system_blocks={len(system_blocks)}, messages={len(api_messages)}, doc_texts={len(doc_texts)}, images={len(image_blocks)}")
             token_count = 0
             async with ac_async.messages.stream(
                 model=MODEL,
@@ -561,12 +510,11 @@ async def analyze(req: AnalyzeRequest, request: Request):
                 async for text in stream.text_stream:
                     token_count += 1
                     yield f"data: {json.dumps({'text': text})}\n\n"
-            print(f"[STREAM] Done — {token_count} chunks yielded")
             if token_count == 0:
                 yield f"data: {json.dumps({'text': 'I received your document but was unable to generate a response. Please try again.'})}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
-            print(f"[STREAM] Error: {e}")
+            print(f"Stream error: {e}")
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(
