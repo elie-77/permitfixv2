@@ -348,7 +348,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
                 max_tokens=4096,
                 system=system_blocks,
                 messages=api_messages,
-                betas=["prompt-caching-2024-07-31"],
+                extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
             ) as stream:
                 for text in stream.text_stream:
                     yield f"data: {json.dumps({'text': text})}\n\n"
