@@ -77,9 +77,7 @@ app.add_middleware(
 def verify_token(token: str) -> dict:
     """Validate Supabase JWT and return user dict. Raises on failure."""
     try:
-        user_resp = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-        user_resp.auth.set_session(token, "")
-        user = user_resp.auth.get_user(token)
+        user = sb.auth.get_user(token)
         if not user or not user.user:
             raise HTTPException(status_code=401, detail="Invalid token")
         return {"id": user.user.id, "email": user.user.email}
