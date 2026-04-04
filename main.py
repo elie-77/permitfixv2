@@ -103,8 +103,13 @@ def get_bearer(request: Request) -> str:
     return auth[7:]
 
 
-def check_access(user_id: str) -> bool:
+ADMIN_EMAILS = {"elie.samaha77@gmail.com"}
+
+def check_access(user_id: str, user_email: str = "") -> bool:
     """Return True if user has active subscription or remaining credits."""
+    # Admin bypass for testing
+    if user_email in ADMIN_EMAILS:
+        return True
     try:
         res = sb.table("stripe_customers").select("*").eq("user_id", user_id).execute()
         if not res.data:
@@ -267,7 +272,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
     token = get_bearer(request)
     user  = verify_token(token)
 
-    if not check_access(user["id"]):
+    if not check_access(user["id"], user.get("email", "")):
         raise HTTPException(status_code=402, detail="No active subscription or credits remaining.")
 
     # ── Decode files ─────────────────────────────────────────────────────────
