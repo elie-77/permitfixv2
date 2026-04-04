@@ -52,19 +52,10 @@ MEDIA_TYPE_MAP = {
 
 app = FastAPI(title="PermitFix AI API", version="1.0.0")
 
-ALLOWED_ORIGINS = [
-    "https://app.permitfix.ca",
-    "https://www.permitfix.ca",
-    "https://permitfix.ca",
-    "http://localhost:3000",
-    "http://localhost:5173",
-    "http://localhost:8080",
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
