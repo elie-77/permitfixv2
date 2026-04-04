@@ -317,16 +317,12 @@ async def analyze(req: AnalyzeRequest, request: Request):
             continue
         seen_paths.add(path)
 
-        # Extract bucket (first segment) and file path (rest)
-        parts = path.split("/", 1)
-        if len(parts) == 2:
-            bucket, file_path = parts[0], parts[1]
-        else:
-            bucket, file_path = "projects", path
+        bucket = "permit-files"
+        file_path = path  # full path within the bucket
 
         try:
             raw  = sb.storage.from_(bucket).download(file_path)
-            name = unquote(file_path.split("/")[-1])
+            name = unquote(path.split("/")[-1])
             ext  = name.rsplit(".", 1)[-1].lower()
             print(f"[STORAGE] fetched {name} from bucket={bucket}")
             if ext == "pdf":
