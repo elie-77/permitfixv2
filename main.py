@@ -39,7 +39,7 @@ print(f"[STARTUP] SUPABASE_URL={SUPABASE_URL[:40] if SUPABASE_URL else 'NOT SET'
 print(f"[STARTUP] SUPABASE_SERVICE_KEY={'SET (' + SUPABASE_SERVICE_KEY[:20] + '...)' if SUPABASE_SERVICE_KEY else 'NOT SET'}")
 print(f"[STARTUP] SUPABASE_ANON_KEY={'SET' if SUPABASE_ANON_KEY else 'NOT SET'}")
 MODEL                = "claude-3-5-sonnet-20241022"
-EMBED_MODEL          = "voyage-large-2-instruct"  # 1536-dim, matches DB
+EMBED_MODEL          = "voyage-large-2"  # 1536-dim, matches DB and load_obc.py
 OBC_MATCH_COUNT      = 8
 
 sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
