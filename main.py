@@ -201,6 +201,29 @@ def build_system_blocks(doc_texts: list[dict], obc_chunks: list[dict]) -> list[d
     return blocks
 
 
+def download_from_storage(bucket: str, path: str) -> bytes:
+    """Download a file from Supabase storage via REST API, bypassing supabase-py client."""
+    from urllib.parse import unquote, quote
+    import httpx
+    # Decode then re-encode properly for the URL
+    decoded_path = unquote(path)
+    encoded_path = quote(decoded_path, safe="/")
+    url = f"{SUPABASE_URL}/storage/v1/object/{bucket}/{encoded_path}"
+    print(f"[STORAGE] GET {url}")
+    resp = httpx.get(
+        url,
+        headers={
+            "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            "apikey": SUPABASE_SERVICE_KEY,
+        },
+        timeout=30,
+        follow_redirects=True,
+    )
+    if resp.status_code != 200:
+        raise Exception(f"Storage HTTP {resp.status_code}: {resp.text[:200]}")
+    return resp.content
+
+
 def extract_pdf_text(file_bytes: bytes) -> tuple[str, int]:
     pages = []
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
@@ -301,7 +324,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
             file_path = f["path"]
             print(f"[FILES] fetching from storage bucket={bucket} path={file_path}")
             try:
-                raw = sb.storage.from_(bucket).download(file_path)
+                raw = download_from_storage(bucket, file_path)
             except Exception as e:
                 print(f"[FILES] storage fetch error: {e}")
                 continue
@@ -342,7 +365,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
         file_path = path  # full path within the bucket
 
         try:
-            raw  = sb.storage.from_(bucket).download(file_path)
+            raw  = download_from_storage(bucket, file_path)
             name = unquote(path.split("/")[-1])
             ext  = name.rsplit(".", 1)[-1].lower()
             print(f"[STORAGE] fetched {name} from bucket={bucket}")
