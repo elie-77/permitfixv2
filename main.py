@@ -192,7 +192,6 @@ def build_system_blocks(doc_texts: list[dict], obc_chunks: list[dict]) -> list[d
         blocks.append({
             "type": "text",
             "text": f"<obc_knowledge>\n{obc_text}\n</obc_knowledge>",
-            "cache_control": {"type": "ephemeral"},
         })
 
     if doc_texts:
@@ -200,7 +199,6 @@ def build_system_blocks(doc_texts: list[dict], obc_chunks: list[dict]) -> list[d
         blocks.append({
             "type": "text",
             "text": f"<project_documents>\n{kb}\n</project_documents>",
-            "cache_control": {"type": "ephemeral"},
         })
 
     return blocks
@@ -491,17 +489,23 @@ async def analyze(req: AnalyzeRequest, request: Request):
     # ── Stream response ───────────────────────────────────────────────────────
     async def generate() -> AsyncGenerator[str, None]:
         try:
+            print(f"[STREAM] Starting — model={MODEL}, system_blocks={len(system_blocks)}, messages={len(api_messages)}, doc_texts={len(doc_texts)}, images={len(image_blocks)}")
+            token_count = 0
             with ac.messages.stream(
                 model=MODEL,
                 max_tokens=2048,
                 system=system_blocks,
                 messages=api_messages,
-                extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
             ) as stream:
                 for text in stream.text_stream:
+                    token_count += 1
                     yield f"data: {json.dumps({'text': text})}\n\n"
+            print(f"[STREAM] Done — {token_count} chunks yielded")
+            if token_count == 0:
+                yield f"data: {json.dumps({'text': 'I received your document but was unable to generate a response. Please try again.'})}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
+            print(f"[STREAM] Error: {e}")
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(
