@@ -75,12 +75,21 @@ app.add_middleware(
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 
 def verify_token(token: str) -> dict:
-    """Validate Supabase JWT and return user dict. Raises on failure."""
+    """Validate Supabase JWT via REST API (avoids local ES256 verification)."""
+    import httpx
     try:
-        user = sb.auth.get_user(token)
-        if not user or not user.user:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "apikey": SUPABASE_ANON_KEY,
+            },
+            timeout=10,
+        )
+        if resp.status_code != 200:
             raise HTTPException(status_code=401, detail="Invalid token")
-        return {"id": user.user.id, "email": user.user.email}
+        data = resp.json()
+        return {"id": data["id"], "email": data["email"]}
     except HTTPException:
         raise
     except Exception as e:
