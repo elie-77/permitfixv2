@@ -44,6 +44,7 @@ OBC_MATCH_COUNT      = 8
 
 sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 ac = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+ac_async = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 vo = voyageai.Client(api_key=VOYAGE_API_KEY) if VOYAGE_API_KEY else None
 
 IMAGE_TYPES    = {"jpg", "jpeg", "png", "webp", "gif"}
@@ -544,13 +545,13 @@ async def analyze(req: AnalyzeRequest, request: Request):
         try:
             print(f"[STREAM] Starting — model={MODEL}, system_blocks={len(system_blocks)}, messages={len(api_messages)}, doc_texts={len(doc_texts)}, images={len(image_blocks)}")
             token_count = 0
-            with ac.messages.stream(
+            async with ac_async.messages.stream(
                 model=MODEL,
                 max_tokens=8192,
                 system=system_blocks,
                 messages=api_messages,
             ) as stream:
-                for text in stream.text_stream:
+                async for text in stream.text_stream:
                     token_count += 1
                     yield f"data: {json.dumps({'text': text})}\n\n"
             print(f"[STREAM] Done — {token_count} chunks yielded")
