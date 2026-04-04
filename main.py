@@ -38,8 +38,8 @@ VOYAGE_API_KEY       = os.getenv("VOYAGE_API_KEY", "")
 print(f"[STARTUP] SUPABASE_URL={SUPABASE_URL[:40] if SUPABASE_URL else 'NOT SET'}")
 print(f"[STARTUP] SUPABASE_SERVICE_KEY={'SET (' + SUPABASE_SERVICE_KEY[:20] + '...)' if SUPABASE_SERVICE_KEY else 'NOT SET'}")
 print(f"[STARTUP] SUPABASE_ANON_KEY={'SET' if SUPABASE_ANON_KEY else 'NOT SET'}")
-MODEL                = "claude-sonnet-4-5"
-EMBED_MODEL          = "voyage-large-2"
+MODEL                = "claude-3-5-sonnet-20241022"
+EMBED_MODEL          = "voyage-large-2-instruct"  # 1536-dim, matches DB
 OBC_MATCH_COUNT      = 8
 
 sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
@@ -196,7 +196,7 @@ def build_system_blocks(doc_texts: list[dict], obc_chunks: list[dict]) -> list[d
         })
 
     if doc_texts:
-        kb = "\n\n".join(f"=== {d['name']} ===\n{d['text'][:20000]}" for d in doc_texts)
+        kb = "\n\n".join(f"=== {d['name']} ===\n{d['text'][:12000]}" for d in doc_texts)
         blocks.append({
             "type": "text",
             "text": f"<project_documents>\n{kb}\n</project_documents>",
@@ -493,7 +493,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
         try:
             with ac.messages.stream(
                 model=MODEL,
-                max_tokens=4096,
+                max_tokens=2048,
                 system=system_blocks,
                 messages=api_messages,
                 extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
