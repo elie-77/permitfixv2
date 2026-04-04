@@ -278,6 +278,12 @@ async def analyze(req: AnalyzeRequest, request: Request):
     if not check_access(user["id"], user.get("email", "")):
         raise HTTPException(status_code=402, detail="No active subscription or credits remaining.")
 
+    # ── Debug: log what was received ─────────────────────────────────────────
+    print(f"[ANALYZE] message={req.message!r}")
+    print(f"[ANALYZE] files count={len(req.files)}")
+    print(f"[ANALYZE] storage_paths={req.storage_paths}")
+    print(f"[ANALYZE] project_id={req.project_id!r}")
+
     # ── Decode files ─────────────────────────────────────────────────────────
     doc_texts: list[dict] = []
     image_blocks: list[dict] = []
