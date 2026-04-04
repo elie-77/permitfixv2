@@ -289,24 +289,40 @@ async def analyze(req: AnalyzeRequest, request: Request):
     image_blocks: list[dict] = []
 
     for f in req.files:
-        name      = f.get("name", "file")
-        file_type = f.get("type", "pdf")
-        if "data" not in f:
-            print(f"[FILES] skipping {name} — no data field, keys={list(f.keys())}")
-            continue
-        raw       = base64.b64decode(f["data"])
+        from urllib.parse import unquote
+        name      = unquote(f.get("name", "file"))
+        file_type = f.get("file_type") or f.get("type", "pdf")
 
-        if file_type == "pdf":
+        # Lovable sends bucket + path instead of base64 data
+        if "data" not in f and "bucket" in f and "path" in f:
+            bucket    = f["bucket"]
+            file_path = f["path"]
+            print(f"[FILES] fetching from storage bucket={bucket} path={file_path}")
+            try:
+                raw = sb.storage.from_(bucket).download(file_path)
+            except Exception as e:
+                print(f"[FILES] storage fetch error: {e}")
+                continue
+        elif "data" in f:
+            raw = base64.b64decode(f["data"])
+        else:
+            print(f"[FILES] skipping {name} — unrecognised format, keys={list(f.keys())}")
+            continue
+
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if ext == "pdf" or file_type == "pdf":
             text, _ = extract_pdf_text(raw)
             if text.strip():
                 doc_texts.append({"name": name, "text": text})
-        elif file_type in IMAGE_TYPES or file_type == "image":
-            ext  = name.rsplit(".", 1)[-1].lower() if "." in name else "png"
+                print(f"[FILES] extracted {len(text)} chars from {name}")
+        elif ext in IMAGE_TYPES or file_type in IMAGE_TYPES or file_type == "image":
+            b64  = base64.b64encode(raw).decode() if "data" not in f else f["data"]
             mime = MEDIA_TYPE_MAP.get(ext, "image/png")
             image_blocks.append({
                 "type": "image",
-                "source": {"type": "base64", "media_type": mime, "data": f["data"]},
+                "source": {"type": "base64", "media_type": mime, "data": b64},
             })
+            print(f"[FILES] added image {name}")
 
     # Fetch from Supabase storage if paths provided
     seen_paths = set()
