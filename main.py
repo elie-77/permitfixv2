@@ -232,6 +232,35 @@ async def health():
     return {"status": "ok", "service": "permitfix-api"}
 
 
+@app.get("/debug")
+async def debug(request: Request):
+    """Temporary debug endpoint — remove after fixing."""
+    token = get_bearer(request)
+    # 1. Which Supabase are we hitting?
+    supabase_url = SUPABASE_URL
+    # 2. Validate token
+    import httpx
+    auth_resp = httpx.get(
+        f"{SUPABASE_URL}/auth/v1/user",
+        headers={"Authorization": f"Bearer {token}", "apikey": SUPABASE_ANON_KEY},
+        timeout=10,
+    )
+    user_data = auth_resp.json() if auth_resp.status_code == 200 else {"error": auth_resp.text}
+    user_id = user_data.get("id", "unknown")
+    # 3. Check stripe_customers
+    try:
+        res = sb.table("stripe_customers").select("*").eq("user_id", user_id).execute()
+        stripe_data = res.data
+    except Exception as e:
+        stripe_data = f"ERROR: {e}"
+    return {
+        "supabase_url": supabase_url,
+        "token_status": auth_resp.status_code,
+        "user": user_data,
+        "stripe_customers": stripe_data,
+    }
+
+
 @app.post("/analyze")
 async def analyze(req: AnalyzeRequest, request: Request):
     # ── Auth ──────────────────────────────────────────────────────────────────
