@@ -38,7 +38,7 @@ VOYAGE_API_KEY       = os.getenv("VOYAGE_API_KEY", "")
 print(f"[STARTUP] SUPABASE_URL={SUPABASE_URL[:40] if SUPABASE_URL else 'NOT SET'}")
 print(f"[STARTUP] SUPABASE_SERVICE_KEY={'SET (' + SUPABASE_SERVICE_KEY[:20] + '...)' if SUPABASE_SERVICE_KEY else 'NOT SET'}")
 print(f"[STARTUP] SUPABASE_ANON_KEY={'SET' if SUPABASE_ANON_KEY else 'NOT SET'}")
-MODEL                = "claude-3-5-sonnet-20241022"
+MODEL                = "claude-opus-4-5"
 EMBED_MODEL          = "voyage-large-2"  # 1536-dim, matches DB and load_obc.py
 OBC_MATCH_COUNT      = 8
 
@@ -245,25 +245,26 @@ MIN_TEXT_PER_PAGE = 80  # chars/page threshold — below this = scanned PDF
 
 
 def extract_pdf_text(file_bytes: bytes) -> tuple[str, int]:
-    """Extract text from a digitally-created PDF."""
+    """Extract text from a PDF using PyMuPDF (faster, more reliable than pdfplumber)."""
+    import fitz
     pages = []
     total_chars = 0
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        page_count = len(pdf.pages)
-        for i, page in enumerate(pdf.pages):
-            if i >= MAX_PDF_PAGES:
-                pages.append(f"[Truncated: first {MAX_PDF_PAGES} of {page_count} pages]")
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    page_count = len(doc)
+    for i in range(min(page_count, MAX_PDF_PAGES)):
+        try:
+            text = doc[i].get_text()
+        except Exception:
+            continue
+        if text and text.strip():
+            pages.append(text.strip())
+            total_chars += len(text)
+            if total_chars >= MAX_PDF_CHARS:
+                pages.append(f"[Truncated: text limit reached at page {i+1}]")
                 break
-            try:
-                text = page.extract_text()
-            except Exception:
-                continue
-            if text:
-                pages.append(text.strip())
-                total_chars += len(text)
-                if total_chars >= MAX_PDF_CHARS:
-                    pages.append(f"[Truncated: text limit reached at page {i+1}]")
-                    break
+    doc.close()
+    if page_count > MAX_PDF_PAGES:
+        pages.append(f"[Truncated: first {MAX_PDF_PAGES} of {page_count} pages]")
     return "\n\n".join(pages), page_count
 
 
