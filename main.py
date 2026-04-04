@@ -494,7 +494,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
             token_count = 0
             with ac.messages.stream(
                 model=MODEL,
-                max_tokens=2048,
+                max_tokens=4096,
                 system=system_blocks,
                 messages=api_messages,
             ) as stream:
