@@ -15,6 +15,7 @@ import time
 from typing import AsyncGenerator
 
 import anthropic
+import pdfplumber
 import voyageai
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -161,6 +162,20 @@ OBC_EXPERT_SYSTEM = (
     "dimensions, setbacks, lot coverage, building height, fire separations, "
     "egress, accessibility, structural elements, and grading.\n\n"
 
+    "## DOCUMENT TYPE IDENTIFICATION — do this first, every time:\n"
+    "Before analyzing, identify what type of document was submitted:\n"
+    "- **Actual permit submission**: real drawings, plans, site surveys, or completed applications "
+    "with specific project measurements, addresses, and site-specific data\n"
+    "- **Compliance template / checklist**: a blank or pre-filled checklist, template, or "
+    "benchmark document used to verify what should be included — not an actual submission\n"
+    "- **Reference document**: OBC extracts, bylaw text, guides, or standards\n\n"
+    "If the document is a **template or checklist**, state this clearly at the top of your response: "
+    "'⚠️ This appears to be a compliance template/checklist, not an actual permit submission. "
+    "Analysis below reflects what a real submission would need to include.' "
+    "Then evaluate the template's completeness, not a real project's compliance. "
+    "Do NOT flag items as missing from the project — flag them as missing from the template itself.\n\n"
+    "If the document is an **actual submission**, proceed with full compliance analysis.\n\n"
+
     "## CITATION RULES — non-negotiable:\n"
     "1. Every regulatory claim must include: the specific bylaw/code name, bylaw NUMBER, "
     "and section number. Never cite just the bylaw name without a number. "
@@ -299,7 +314,7 @@ MIN_TEXT_PER_PAGE = 80  # chars/page threshold — below this = scanned PDF
 
 
 def extract_pdf_text(file_bytes: bytes) -> tuple[str, int]:
-    """Extract text from a PDF using PyMuPDF (faster, more reliable than pdfplumber)."""
+    """Extract text and tables from a PDF using PyMuPDF + pdfplumber for tables."""
     import fitz
     pages = []
     total_chars = 0
@@ -319,6 +334,27 @@ def extract_pdf_text(file_bytes: bytes) -> tuple[str, int]:
     doc.close()
     if page_count > MAX_PDF_PAGES:
         pages.append(f"[Truncated: first {MAX_PDF_PAGES} of {page_count} pages]")
+
+    # Extract tables separately with pdfplumber and append as structured text
+    try:
+        table_blocks = []
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for i, page in enumerate(pdf.pages[:MAX_PDF_PAGES]):
+                tables = page.extract_tables()
+                for t_idx, table in enumerate(tables):
+                    if not table:
+                        continue
+                    rows = []
+                    for row in table:
+                        cleaned = [str(cell).strip() if cell else "" for cell in row]
+                        rows.append(" | ".join(cleaned))
+                    block = f"[Table on page {i+1}]\n" + "\n".join(rows)
+                    table_blocks.append(block)
+        if table_blocks:
+            pages.append("\n\n--- EXTRACTED TABLES ---\n" + "\n\n".join(table_blocks))
+    except Exception:
+        pass
+
     return "\n\n".join(pages), page_count
 
 
