@@ -238,8 +238,8 @@ def deduct_credit(user_id: str):
 
 # ── OBC semantic search ───────────────────────────────────────────────────────
 
-def search_obc(query: str) -> list[dict]:
-    """Embed query with Voyage AI, search pgvector, return relevant OBC chunks."""
+def search_obc(query: str, municipality: str = "") -> list[dict]:
+    """Embed query with Voyage AI, search pgvector, return OBC + municipal chunks."""
     if not vo:
         return []
     try:
@@ -247,14 +247,26 @@ def search_obc(query: str) -> list[dict]:
         def _search():
             res = vo.embed([query], model=EMBED_MODEL, input_type="query")
             embedding = res.embeddings[0]
-            rows = sb.rpc("match_obc_sections", {
+            params = {
                 "query_embedding": embedding,
-                "match_count": OBC_MATCH_COUNT,
-            }).execute()
+                "match_count":     OBC_MATCH_COUNT,
+            }
+            # Look up municipality_id if a name was provided
+            if municipality:
+                muni_res = (
+                    sb.table("municipalities")
+                    .select("id")
+                    .ilike("name", f"%{municipality}%")
+                    .limit(1)
+                    .execute()
+                )
+                if muni_res.data:
+                    params["p_municipality_id"] = muni_res.data[0]["id"]
+            rows = sb.rpc("match_obc_sections", params).execute()
             return rows.data or []
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future = executor.submit(_search)
-            return future.result(timeout=5)  # fail fast after 5s
+            return future.result(timeout=8)
     except Exception as e:
         print(f"OBC search error: {e}")
         return []
@@ -561,6 +573,7 @@ class AnalyzeRequest(BaseModel):
     # Optional: Supabase storage paths to fetch server-side
     storage_paths: list[str] = []
     project_id: str = ""
+    municipality: str = ""   # e.g. "Toronto" — used to pull municipal bylaw chunks
 
 
 class GeneratePdfRequest(BaseModel):
@@ -638,7 +651,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
             # ── 2. Kick off OBC search in background thread immediately ───────
             # It only needs req.message, so it can run while we download files.
             loop = asyncio.get_event_loop()
-            obc_future = loop.run_in_executor(None, search_obc, req.message)
+            obc_future = loop.run_in_executor(None, search_obc, req.message, req.municipality)
 
             # ── 3. Download and process files ─────────────────────────────────
             yield f"data: {json.dumps({'status': 'Reading uploaded documents...'})}\n\n"
