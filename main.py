@@ -771,7 +771,32 @@ def _build_pdf(project_name: str, messages: list[Message], doc_names: list[str])
     from fpdf import FPDF
 
     def safe(text: str) -> str:
-        return str(text).encode("latin-1", errors="ignore").decode("latin-1")
+        text = str(text)
+        # Translate common Unicode to readable ASCII before stripping
+        _UNI = {
+            "\u2014": "-",    # em dash —
+            "\u2013": "-",    # en dash –
+            "\u2022": "-",    # bullet •
+            "\u2018": "'",    # left single quote
+            "\u2019": "'",    # right single quote
+            "\u201c": '"',    # left double quote
+            "\u201d": '"',    # right double quote
+            "\u2026": "...",  # ellipsis
+            "\u00a0": " ",    # non-breaking space
+            "\u2264": "<=",   # ≤
+            "\u2265": ">=",   # ≥
+            "\u00b0": " deg", # °
+            "\u2705": "[OK]", # ✅
+            "\u274c": "[X]",  # ❌
+            "\u26a0": "[!]",  # ⚠
+            "\ufe0f": "",     # variation selector (emoji modifier)
+            "\u2139": "[i]",  # ℹ
+            "\U0001f7e1": "[~]",  # 🟡
+            "\U0001f4cb": "",     # 📋
+        }
+        for ch, rep in _UNI.items():
+            text = text.replace(ch, rep)
+        return text.encode("latin-1", errors="ignore").decode("latin-1")
 
     def clean(text: str) -> str:
         text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
@@ -869,7 +894,7 @@ def _build_pdf(project_name: str, messages: list[Message], doc_names: list[str])
             if is_bullet(line):
                 pdf.set_x(16)
                 pdf.set_font("Helvetica", "", 8.5)
-                pdf.multi_cell(182, 5, f"\u2022  {bullet_body(line)}", fill=False)
+                pdf.multi_cell(182, 5, f"-  {bullet_body(line)}", fill=False)
             else:
                 cleaned = clean(line)
                 if cleaned.strip():
@@ -892,7 +917,7 @@ def _build_pdf(project_name: str, messages: list[Message], doc_names: list[str])
     pdf.set_text_color(255, 255, 255)
     pdf.set_font("Helvetica", "B", 16)
     pdf.set_xy(10, 8)
-    pdf.cell(190, 8, "PermitFix AI — Compliance Report", ln=True)
+    pdf.cell(190, 8, safe("PermitFix AI - Compliance Report"), ln=True)
     pdf.set_font("Helvetica", "", 9)
     pdf.set_x(10)
     from datetime import datetime
