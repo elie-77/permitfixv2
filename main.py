@@ -12,6 +12,7 @@ import base64
 import json
 import re
 import time
+from datetime import datetime, timezone, timedelta
 from typing import AsyncGenerator
 
 import anthropic
@@ -37,6 +38,7 @@ VOYAGE_API_KEY       = os.getenv("VOYAGE_API_KEY", "")
 MODEL                = "claude-opus-4-5"
 EMBED_MODEL          = "voyage-large-2"  # 1536-dim, matches DB and load_obc.py
 OBC_MATCH_COUNT      = 8
+TRIAL_DURATION_DAYS  = 3
 
 sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 ac = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -95,23 +97,121 @@ def get_bearer(request: Request) -> str:
 
 ADMIN_EMAILS = {"elie.samaha77@gmail.com"}
 
-def check_access(user_id: str, user_email: str = "") -> bool:
-    """Return True if user has active subscription or remaining credits."""
-    # Admin bypass for testing
+# Access modes returned by get_access_mode():
+#   "full"             — paid subscriber or admin
+#   "trialing"         — Stripe-managed trial (subscription_status='trialing'), not yet expired
+#   "trial"            — legacy custom trial, scan not yet used
+#   "trial_scan_used"  — legacy custom trial, scan already used
+#   "trial_expired"    — trial window has passed
+#   "blocked"          — no subscription, no trial
+
+
+def _parse_ts(ts_str: str):
+    """Parse ISO timestamp string from Supabase to UTC-aware datetime."""
+    return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+
+
+def get_access_mode(user_id: str, user_email: str = "") -> str:
     if user_email in ADMIN_EMAILS:
-        return True
+        return "full"
     try:
         res = sb.table("stripe_customers").select("*").eq("user_id", user_id).execute()
         if not res.data:
-            return False
+            return "blocked"
         d = res.data[0]
-        if d.get("subscription_status") == "active":
-            return True
+        status = d.get("subscription_status", "")
+        # Paid access
+        if status == "active":
+            return "full"
         if d.get("plan_type") == "per_submission" and d.get("submissions_remaining", 0) > 0:
-            return True
-        return False
+            return "full"
+        # Stripe-managed trial
+        if status == "trialing":
+            trial_exp = d.get("trial_expires_at")
+            if trial_exp:
+                now = datetime.now(timezone.utc)
+                if now >= _parse_ts(trial_exp):
+                    return "trial_expired"
+            return "trialing"
+        # Legacy custom trial
+        trial_exp = d.get("trial_expires_at")
+        if trial_exp:
+            now = datetime.now(timezone.utc)
+            if now >= _parse_ts(trial_exp):
+                return "trial_expired"
+            if d.get("trial_scan_used"):
+                return "trial_scan_used"
+            return "trial"
+        return "blocked"
     except Exception:
-        return False
+        return "blocked"
+
+
+def get_trial_info(user_id: str) -> dict:
+    """Return trial metadata for a user."""
+    try:
+        res = sb.table("stripe_customers").select("*").eq("user_id", user_id).execute()
+        if not res.data:
+            return {"has_trial": False}
+        d = res.data[0]
+        trial_started = d.get("trial_started_at")
+        trial_expires = d.get("trial_expires_at")
+        if not trial_started or not trial_expires:
+            return {"has_trial": False}
+        now = datetime.now(timezone.utc)
+        exp = _parse_ts(trial_expires)
+        delta = exp - now
+        return {
+            "has_trial": True,
+            "is_active": now < exp,
+            "trial_scan_used": bool(d.get("trial_scan_used")),
+            "trial_started_at": trial_started,
+            "trial_expires_at": trial_expires,
+            "hours_remaining": max(0, int(delta.total_seconds() / 3600)),
+        }
+    except Exception:
+        return {"has_trial": False}
+
+
+def start_trial(user_id: str) -> dict:
+    """Start 3-day trial for user. Idempotent — won't overwrite an existing trial or paid plan."""
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(days=TRIAL_DURATION_DAYS)
+    try:
+        res = sb.table("stripe_customers").select("*").eq("user_id", user_id).execute()
+        if res.data:
+            d = res.data[0]
+            # Don't restart if already on paid plan or already trialing
+            if d.get("subscription_status") == "active" or d.get("trial_started_at"):
+                return get_trial_info(user_id)
+            sb.table("stripe_customers").update({
+                "trial_started_at": now.isoformat(),
+                "trial_expires_at": exp.isoformat(),
+                "trial_scan_used":  False,
+            }).eq("user_id", user_id).execute()
+        else:
+            sb.table("stripe_customers").insert({
+                "user_id":               user_id,
+                "subscription_status":   "inactive",
+                "plan_type":             "per_submission",
+                "submissions_remaining": 0,
+                "trial_started_at":      now.isoformat(),
+                "trial_expires_at":      exp.isoformat(),
+                "trial_scan_used":       False,
+            }).execute()
+        return get_trial_info(user_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not start trial: {e}")
+
+
+def mark_trial_scan_used(user_id: str, project_id: str = ""):
+    try:
+        sb.table("stripe_customers").update({
+            "trial_scan_used":       True,
+            "trial_scan_project_id": project_id,
+        }).eq("user_id", user_id).execute()
+    except Exception:
+        pass
 
 
 def deduct_credit(user_id: str):
@@ -434,6 +534,29 @@ async def health():
     return {"status": "ok", "service": "permitfix-api"}
 
 
+@app.get("/trial-status")
+async def trial_status_endpoint(request: Request):
+    """Return trial info + access mode for the authenticated user."""
+    token = get_bearer(request)
+    user  = verify_token(token)
+    info  = get_trial_info(user["id"])
+    mode  = get_access_mode(user["id"], user.get("email", ""))
+    return {**info, "access_mode": mode, "email": user.get("email", "")}
+
+
+@app.post("/start-trial")
+async def start_trial_endpoint(request: Request):
+    """Start a 3-day free trial for the authenticated user (idempotent)."""
+    token = get_bearer(request)
+    user  = verify_token(token)
+    # If already on a paid plan, return 400
+    res = sb.table("stripe_customers").select("subscription_status") \
+            .eq("user_id", user["id"]).execute()
+    if res.data and res.data[0].get("subscription_status") == "active":
+        raise HTTPException(status_code=400, detail="User already has an active subscription.")
+    info = start_trial(user["id"])
+    return info
+
 
 @app.post("/analyze")
 async def analyze(req: AnalyzeRequest, request: Request):
@@ -441,8 +564,14 @@ async def analyze(req: AnalyzeRequest, request: Request):
     token = get_bearer(request)
     user  = verify_token(token)
 
-    if not check_access(user["id"], user.get("email", "")):
-        raise HTTPException(status_code=402, detail="No active subscription or credits remaining.")
+    access_mode = get_access_mode(user["id"], user.get("email", ""))
+    if access_mode in ("blocked",):
+        raise HTTPException(status_code=402, detail="No active subscription or trial. Sign up for a free trial.")
+    if access_mode == "trial_expired":
+        raise HTTPException(status_code=402, detail="Your free trial has expired. Upgrade to continue.")
+    if access_mode == "trial_scan_used":
+        raise HTTPException(status_code=402, detail="Trial scan already used. Upgrade to run more analyses.")
+    is_trial = access_mode in ("trial", "trialing")
 
     # ── Decode files ─────────────────────────────────────────────────────────
     doc_texts: list[dict] = []
@@ -541,8 +670,15 @@ async def analyze(req: AnalyzeRequest, request: Request):
     api_messages.append({"role": "user", "content": req.message})
 
     # ── Stream response ───────────────────────────────────────────────────────
+    _user_id   = user["id"]
+    _project_id = req.project_id
+
     async def generate() -> AsyncGenerator[str, None]:
         try:
+            # Signal trial mode to client so it can apply blur / gating
+            if is_trial:
+                yield f"data: {json.dumps({'trial_mode': True})}\n\n"
+
             token_count = 0
             async with ac_async.messages.stream(
                 model=MODEL,
@@ -553,8 +689,15 @@ async def analyze(req: AnalyzeRequest, request: Request):
                 async for text in stream.text_stream:
                     token_count += 1
                     yield f"data: {json.dumps({'text': text})}\n\n"
+
             if token_count == 0:
                 yield f"data: {json.dumps({'text': 'I received your document but was unable to generate a response. Please try again.'})}\n\n"
+
+            # Consume the trial scan after a successful stream
+            if is_trial:
+                mark_trial_scan_used(_user_id, _project_id)
+                yield f"data: {json.dumps({'trial_scan_complete': True})}\n\n"
+
             yield "data: [DONE]\n\n"
         except Exception as e:
             print(f"Stream error: {e}")
