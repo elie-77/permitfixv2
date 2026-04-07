@@ -299,7 +299,18 @@ def extract_municipality(doc_texts: list[dict]) -> str:
 # ── OBC semantic search ───────────────────────────────────────────────────────
 
 def search_obc(query: str, municipality: str = "") -> list[dict]:
-    """Embed query with Voyage AI, search pgvector, return OBC + municipal chunks."""
+    """
+    Embed query with Voyage AI and search pgvector.
+
+    When municipality is provided, runs TWO separate searches and combines:
+      1. OBC-only (municipality_id IS NULL) — top 15 provincial chunks
+      2. Municipal-only (municipality_id = muni_id) — top 15 bylaw chunks
+    This guarantees municipal bylaw sections always appear regardless of how
+    OBC sections rank by similarity (OBC pool is 20x larger and would otherwise
+    dominate a single combined search).
+
+    Without municipality: returns top OBC_MATCH_COUNT provincial chunks only.
+    """
     if not vo:
         return []
     try:
@@ -307,26 +318,52 @@ def search_obc(query: str, municipality: str = "") -> list[dict]:
         def _search():
             res = vo.embed([query], model=EMBED_MODEL, input_type="query")
             embedding = res.embeddings[0]
-            params = {
+
+            if not municipality:
+                rows = sb.rpc("match_obc_sections", {
+                    "query_embedding": embedding,
+                    "match_count":     OBC_MATCH_COUNT,
+                }).execute()
+                return rows.data or []
+
+            # Look up municipality_id
+            muni_res = (
+                sb.table("municipalities")
+                .select("id")
+                .ilike("name", f"%{municipality}%")
+                .limit(1)
+                .execute()
+            )
+            if not muni_res.data:
+                # Unknown municipality — fall back to OBC only
+                rows = sb.rpc("match_obc_sections", {
+                    "query_embedding": embedding,
+                    "match_count":     OBC_MATCH_COUNT,
+                }).execute()
+                return rows.data or []
+
+            muni_id = muni_res.data[0]["id"]
+
+            # Search 1: OBC-only (no municipality filter)
+            obc_rows = sb.rpc("match_obc_sections", {
                 "query_embedding": embedding,
-                "match_count":     OBC_MATCH_COUNT,
-            }
-            # Look up municipality_id if a name was provided
-            if municipality:
-                muni_res = (
-                    sb.table("municipalities")
-                    .select("id")
-                    .ilike("name", f"%{municipality}%")
-                    .limit(1)
-                    .execute()
-                )
-                if muni_res.data:
-                    params["p_municipality_id"] = muni_res.data[0]["id"]
-            rows = sb.rpc("match_obc_sections", params).execute()
-            return rows.data or []
+                "match_count":     15,
+            }).execute().data or []
+            obc_only = [r for r in obc_rows if not r.get("municipality_id")]
+
+            # Search 2: municipal chunks only (filter to muni_id results)
+            muni_rows = sb.rpc("match_obc_sections", {
+                "query_embedding":  embedding,
+                "match_count":      20,
+                "p_municipality_id": muni_id,
+            }).execute().data or []
+            muni_only = [r for r in muni_rows if r.get("municipality_id")]
+
+            return obc_only + muni_only
+
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future = executor.submit(_search)
-            return future.result(timeout=8)
+            return future.result(timeout=12)
     except Exception as e:
         print(f"OBC search error: {e}")
         return []
@@ -815,23 +852,18 @@ async def analyze(req: AnalyzeRequest, request: Request):
                 obc_chunks = []
 
             # If we detected a municipality that wasn't used in the initial search,
-            # run a targeted re-search now to pull in the right municipal bylaw chunks.
+            # re-run with the detected municipality. search_obc() now runs two
+            # separate queries (OBC-only + municipal-only) and combines them,
+            # guaranteeing bylaw sections appear regardless of OBC similarity ranking.
             if detected_municipality and detected_municipality != req.municipality:
                 try:
-                    # Use a rich permit-specific query so the vector search returns
-                    # the most relevant bylaw sections (setbacks, lot coverage, parking, etc.)
                     muni_query = (
                         f"{detected_municipality} zoning bylaw setbacks lot coverage "
                         f"building height parking requirements permitted uses {req.message}"
                     )
-                    municipal_chunks = await loop.run_in_executor(
+                    obc_chunks = await loop.run_in_executor(
                         None, search_obc, muni_query, detected_municipality
                     )
-                    if municipal_chunks:
-                        # Merge: keep OBC chunks (municipality_id=None) from original,
-                        # replace municipal chunks with the correctly-targeted ones
-                        obc_only = [c for c in obc_chunks if not c.get("municipality_id")]
-                        obc_chunks = obc_only + municipal_chunks
                 except Exception as e:
                     print(f"Municipality re-search error: {e}")
 
