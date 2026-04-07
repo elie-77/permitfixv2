@@ -267,7 +267,7 @@ def extract_municipality(doc_texts: list[dict]) -> str:
 
     # 1. Explicit form field: "Municipality: Toronto" or "City/Town: Brampton"
     field_match = re.search(
-        r'(?:municipality|city[/ ]*town|city|town|local\s+municipality)\s*[:/]\s*([A-Za-z .\''-]{2,40})',
+        r"(?:municipality|city[/ ]*town|city|town|local\s+municipality)\s*[:/]\s*([A-Za-z .''-]{2,40})",
         sample, re.IGNORECASE
     )
     if field_match:
@@ -278,7 +278,7 @@ def extract_municipality(doc_texts: list[dict]) -> str:
 
     # 2. Address pattern: "123 Main St, Toronto, ON" or "Toronto, Ontario"
     addr_match = re.findall(
-        r',\s*([A-Za-z .\''-]{2,30}),?\s*(?:ON|Ontario)\b',
+        r",\s*([A-Za-z .''-]{2,30}),?\s*(?:ON|Ontario)\b",
         sample, re.IGNORECASE
     )
     for candidate in addr_match:
