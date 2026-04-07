@@ -344,20 +344,27 @@ def search_obc(query: str, municipality: str = "") -> list[dict]:
 
             muni_id = muni_res.data[0]["id"]
 
-            # Search 1: OBC-only (no municipality filter)
-            obc_rows = sb.rpc("match_obc_sections", {
-                "query_embedding": embedding,
-                "match_count":     15,
-            }).execute().data or []
-            obc_only = [r for r in obc_rows if not r.get("municipality_id")]
+            # Search 1 + 2 in parallel: OBC-only and municipal-only simultaneously
+            def _obc():
+                rows = sb.rpc("match_obc_sections", {
+                    "query_embedding": embedding,
+                    "match_count":     15,
+                }).execute().data or []
+                return [r for r in rows if not r.get("municipality_id")]
 
-            # Search 2: municipal chunks only (filter to muni_id results)
-            muni_rows = sb.rpc("match_obc_sections", {
-                "query_embedding":  embedding,
-                "match_count":      20,
-                "p_municipality_id": muni_id,
-            }).execute().data or []
-            muni_only = [r for r in muni_rows if r.get("municipality_id")]
+            def _muni():
+                rows = sb.rpc("match_obc_sections", {
+                    "query_embedding":   embedding,
+                    "match_count":       20,
+                    "p_municipality_id": muni_id,
+                }).execute().data or []
+                return [r for r in rows if r.get("municipality_id")]
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                f_obc  = pool.submit(_obc)
+                f_muni = pool.submit(_muni)
+                obc_only  = f_obc.result()
+                muni_only = f_muni.result()
 
             return obc_only + muni_only
 
