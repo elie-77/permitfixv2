@@ -37,7 +37,7 @@ VOYAGE_API_KEY       = os.getenv("VOYAGE_API_KEY", "")
 
 MODEL                = "claude-opus-4-5"
 EMBED_MODEL          = "voyage-large-2"  # 1536-dim, matches DB and load_obc.py
-OBC_MATCH_COUNT      = 8
+OBC_MATCH_COUNT      = 25
 TRIAL_DURATION_DAYS  = 3
 
 sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
@@ -818,8 +818,14 @@ async def analyze(req: AnalyzeRequest, request: Request):
             # run a targeted re-search now to pull in the right municipal bylaw chunks.
             if detected_municipality and detected_municipality != req.municipality:
                 try:
+                    # Use a rich permit-specific query so the vector search returns
+                    # the most relevant bylaw sections (setbacks, lot coverage, parking, etc.)
+                    muni_query = (
+                        f"{detected_municipality} zoning bylaw setbacks lot coverage "
+                        f"building height parking requirements permitted uses {req.message}"
+                    )
                     municipal_chunks = await loop.run_in_executor(
-                        None, search_obc, req.message, detected_municipality
+                        None, search_obc, muni_query, detected_municipality
                     )
                     if municipal_chunks:
                         # Merge: keep OBC chunks (municipality_id=None) from original,
