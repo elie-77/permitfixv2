@@ -99,6 +99,7 @@ ADMIN_EMAILS = {"elie.samaha77@gmail.com"}
 
 # Access modes returned by get_access_mode():
 #   "full"             — paid subscriber or admin
+#   "chat_only"        — per_submission user with 0 credits; may ask questions, no new submissions
 #   "trialing"         — Stripe-managed trial (subscription_status='trialing'), not yet expired
 #   "trial"            — legacy custom trial, scan not yet used
 #   "trial_scan_used"  — legacy custom trial, scan already used
@@ -123,8 +124,11 @@ def get_access_mode(user_id: str, user_email: str = "") -> str:
         # Paid access
         if status == "active":
             return "full"
-        if d.get("plan_type") == "per_submission" and d.get("submissions_remaining", 0) > 0:
-            return "full"
+        if d.get("plan_type") == "per_submission":
+            if d.get("submissions_remaining", 0) > 0:
+                return "full"
+            # Credits exhausted — can still chat about existing reports, no new submissions
+            return "chat_only"
         # Stripe-managed trial
         if status == "trialing":
             trial_exp = d.get("trial_expires_at")
@@ -221,8 +225,11 @@ def deduct_credit(user_id: str):
             d = res.data[0]
             if d.get("plan_type") == "per_submission":
                 new_count = max(0, d.get("submissions_remaining", 1) - 1)
+                update = {"submissions_remaining": new_count}
+                if new_count == 0:
+                    update["subscription_status"] = "inactive"
                 sb.table("stripe_customers") \
-                  .update({"submissions_remaining": new_count}) \
+                  .update(update) \
                   .eq("user_id", user_id) \
                   .execute()
     except Exception:
@@ -600,14 +607,19 @@ async def analyze(req: AnalyzeRequest, request: Request):
     user  = verify_token(token)
 
     access_mode = get_access_mode(user["id"], user.get("email", ""))
+    has_new_files = bool(req.files or req.storage_paths)
+
     if access_mode == "blocked":
         raise HTTPException(status_code=402, detail="No active subscription or trial. Sign up for a free trial.")
     if access_mode == "trial_expired":
         raise HTTPException(status_code=402, detail="Your free trial has expired. Upgrade to continue.")
     if access_mode == "trial_scan_used":
         raise HTTPException(status_code=402, detail="Trial scan already used. Upgrade to run more analyses.")
+    if access_mode == "chat_only" and has_new_files:
+        raise HTTPException(status_code=402, detail="No submission credits remaining. Upgrade to analyze new documents.")
 
-    is_trial    = access_mode in ("trial", "trialing")
+    is_trial      = access_mode in ("trial", "trialing")
+    is_submission = access_mode == "full" and has_new_files
     _user_id    = user["id"]
     _project_id = req.project_id
 
@@ -736,6 +748,10 @@ async def analyze(req: AnalyzeRequest, request: Request):
             if is_trial:
                 mark_trial_scan_used(_user_id, _project_id)
                 yield f"data: {json.dumps({'trial_scan_complete': True})}\n\n"
+
+            # Deduct one credit after a successful paid submission
+            if is_submission and token_count > 0:
+                loop.run_in_executor(None, deduct_credit, _user_id)
 
             yield "data: [DONE]\n\n"
 
