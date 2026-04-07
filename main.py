@@ -605,7 +605,7 @@ MIN_TEXT_PER_PAGE = 80  # chars/page threshold — below this = scanned PDF
 
 
 def extract_pdf_text(file_bytes: bytes) -> tuple[str, int]:
-    """Extract text and tables from a PDF using PyMuPDF + pdfplumber for tables."""
+    """Extract text from a PDF using PyMuPDF (fast)."""
     import fitz
     pages = []
     total_chars = 0
@@ -625,27 +625,6 @@ def extract_pdf_text(file_bytes: bytes) -> tuple[str, int]:
     doc.close()
     if page_count > MAX_PDF_PAGES:
         pages.append(f"[Truncated: first {MAX_PDF_PAGES} of {page_count} pages]")
-
-    # Extract tables separately with pdfplumber and append as structured text
-    try:
-        table_blocks = []
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            for i, page in enumerate(pdf.pages[:MAX_PDF_PAGES]):
-                tables = page.extract_tables()
-                for t_idx, table in enumerate(tables):
-                    if not table:
-                        continue
-                    rows = []
-                    for row in table:
-                        cleaned = [str(cell).strip() if cell else "" for cell in row]
-                        rows.append(" | ".join(cleaned))
-                    block = f"[Table on page {i+1}]\n" + "\n".join(rows)
-                    table_blocks.append(block)
-        if table_blocks:
-            pages.append("\n\n--- EXTRACTED TABLES ---\n" + "\n\n".join(table_blocks))
-    except Exception:
-        pass
-
     return "\n\n".join(pages), page_count
 
 
@@ -782,16 +761,15 @@ async def analyze(req: AnalyzeRequest, request: Request):
             loop = asyncio.get_event_loop()
             obc_future = loop.run_in_executor(None, search_obc, req.message, req.municipality)
 
-            # ── 3. Download and process files ─────────────────────────────────
+            # ── 3. Download and process files (parallel) ──────────────────────
             yield f"data: {json.dumps({'status': 'Reading uploaded documents...'})}\n\n"
 
             doc_texts: list[dict]    = []
             image_blocks: list[dict] = []
 
-            for f in req.files:
+            async def fetch_and_process(f: dict):
                 name      = unquote(f.get("name", "file"))
                 file_type = f.get("file_type") or f.get("type", "pdf")
-
                 if "data" not in f and "bucket" in f and "path" in f:
                     try:
                         raw = await loop.run_in_executor(
@@ -799,49 +777,47 @@ async def analyze(req: AnalyzeRequest, request: Request):
                         )
                     except Exception as e:
                         print(f"Error fetching file {name}: {e}")
-                        continue
+                        return
                 elif "data" in f:
                     raw = base64.b64decode(f["data"])
                 else:
-                    continue
-
+                    return
                 ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
                 if ext == "pdf" or file_type == "pdf":
                     await loop.run_in_executor(None, process_pdf, raw, name, doc_texts, image_blocks)
                 elif ext in IMAGE_TYPES or file_type in IMAGE_TYPES or file_type == "image":
                     b64  = base64.b64encode(raw).decode() if "data" not in f else f["data"]
                     mime = MEDIA_TYPE_MAP.get(ext, "image/png")
-                    image_blocks.append({
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": mime, "data": b64},
-                    })
+                    image_blocks.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}})
 
-            # Deduplicate storage_paths vs files already fetched
-            already_fetched = {unquote(f["path"]) for f in req.files if "path" in f}
-            seen_paths: set[str] = set()
-
-            for raw_path in req.storage_paths:
-                path = unquote(raw_path)
-                if path in seen_paths or path in already_fetched:
-                    continue
-                seen_paths.add(path)
+            async def fetch_storage_path(path: str):
+                name = unquote(path.split("/")[-1])
+                ext  = name.rsplit(".", 1)[-1].lower()
                 try:
-                    raw  = await loop.run_in_executor(
+                    raw = await loop.run_in_executor(
                         None, download_from_storage, "permit-files", path, token
                     )
-                    name = unquote(path.split("/")[-1])
-                    ext  = name.rsplit(".", 1)[-1].lower()
                     if ext == "pdf":
                         await loop.run_in_executor(None, process_pdf, raw, name, doc_texts, image_blocks)
                     elif ext in IMAGE_TYPES:
                         b64  = base64.b64encode(raw).decode()
                         mime = MEDIA_TYPE_MAP.get(ext, "image/png")
-                        image_blocks.append({
-                            "type": "image",
-                            "source": {"type": "base64", "media_type": mime, "data": b64},
-                        })
+                        image_blocks.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}})
                 except Exception as e:
                     print(f"Error fetching storage path {path}: {e}")
+
+            # Collect all tasks and run in parallel
+            tasks = [fetch_and_process(f) for f in req.files]
+            already_fetched = {unquote(f["path"]) for f in req.files if "path" in f}
+            seen_paths: set[str] = set()
+            for raw_path in req.storage_paths:
+                path = unquote(raw_path)
+                if path not in seen_paths and path not in already_fetched:
+                    seen_paths.add(path)
+                    tasks.append(fetch_storage_path(path))
+
+            if tasks:
+                await asyncio.gather(*tasks)
 
             # ── 4. Auto-detect municipality from uploaded docs ────────────────
             detected_municipality = req.municipality  # use explicit value if provided
