@@ -595,124 +595,129 @@ async def start_trial_endpoint(request: Request):
 
 @app.post("/analyze")
 async def analyze(req: AnalyzeRequest, request: Request):
-    # ── Auth ──────────────────────────────────────────────────────────────────
+    # ── Auth (sync — must complete before we can stream) ──────────────────────
     token = get_bearer(request)
     user  = verify_token(token)
 
     access_mode = get_access_mode(user["id"], user.get("email", ""))
-    if access_mode in ("blocked",):
+    if access_mode == "blocked":
         raise HTTPException(status_code=402, detail="No active subscription or trial. Sign up for a free trial.")
     if access_mode == "trial_expired":
         raise HTTPException(status_code=402, detail="Your free trial has expired. Upgrade to continue.")
     if access_mode == "trial_scan_used":
         raise HTTPException(status_code=402, detail="Trial scan already used. Upgrade to run more analyses.")
-    is_trial = access_mode in ("trial", "trialing")
 
-    # ── Decode files ─────────────────────────────────────────────────────────
-    doc_texts: list[dict] = []
-    image_blocks: list[dict] = []
-
-    for f in req.files:
-        from urllib.parse import unquote
-        name      = unquote(f.get("name", "file"))
-        file_type = f.get("file_type") or f.get("type", "pdf")
-
-        # Lovable sends bucket + path instead of base64 data
-        if "data" not in f and "bucket" in f and "path" in f:
-            bucket    = f["bucket"]
-            file_path = f["path"]
-            try:
-                raw = download_from_storage(bucket, file_path, user_token=token)
-            except Exception as e:
-                print(f"Error fetching file {name}: {e}")
-                continue
-        elif "data" in f:
-            raw = base64.b64decode(f["data"])
-        else:
-            continue
-
-        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-        if ext == "pdf" or file_type == "pdf":
-            process_pdf(raw, name, doc_texts, image_blocks)
-        elif ext in IMAGE_TYPES or file_type in IMAGE_TYPES or file_type == "image":
-            b64  = base64.b64encode(raw).decode() if "data" not in f else f["data"]
-            mime = MEDIA_TYPE_MAP.get(ext, "image/png")
-            image_blocks.append({
-                "type": "image",
-                "source": {"type": "base64", "media_type": mime, "data": b64},
-            })
-
-    # Track paths already fetched via the files array to avoid duplicates
-    already_fetched = set()
-    for f in req.files:
-        if "path" in f:
-            from urllib.parse import unquote
-            already_fetched.add(unquote(f["path"]))
-
-    # Fetch from Supabase storage if paths provided
-    seen_paths = set()
-    for raw_path in req.storage_paths:
-        # URL-decode the path
-        from urllib.parse import unquote
-        path = unquote(raw_path)
-
-        # Deduplicate and skip if already fetched via files array
-        if path in seen_paths or path in already_fetched:
-            continue
-        seen_paths.add(path)
-
-        bucket = "permit-files"
-        file_path = path  # full path within the bucket
-
-        try:
-            raw  = download_from_storage(bucket, file_path, user_token=token)
-            name = unquote(path.split("/")[-1])
-            ext  = name.rsplit(".", 1)[-1].lower()
-            if ext == "pdf":
-                process_pdf(raw, name, doc_texts, image_blocks)
-            elif ext in IMAGE_TYPES:
-                b64  = base64.b64encode(raw).decode()
-                mime = MEDIA_TYPE_MAP.get(ext, "image/png")
-                image_blocks.append({
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": mime, "data": b64},
-                })
-        except Exception as e:
-            print(f"Error fetching storage path {path}: {e}")
-
-    # ── OBC search ────────────────────────────────────────────────────────────
-    obc_chunks = search_obc(req.message)
-
-    # ── Build messages ────────────────────────────────────────────────────────
-    system_blocks = build_system_blocks(doc_texts, obc_chunks, is_trial=is_trial)
-
-    # History
-    api_messages: list[dict] = []
-
-    # Prepend images as first user turn if any
-    if image_blocks:
-        image_blocks.append({
-            "type": "text",
-            "text": f"I've uploaded {len(image_blocks)} drawing(s). Analyze carefully for Ontario Building Code compliance.",
-        })
-        api_messages.append({"role": "user",      "content": image_blocks})
-        api_messages.append({"role": "assistant",
-                              "content": f"I've reviewed the {len(image_blocks)-1} drawing(s) and am ready to analyze them."})
-
-    for m in req.history:
-        api_messages.append({"role": m.role, "content": m.content})
-
-    api_messages.append({"role": "user", "content": req.message})
-
-    # ── Stream response ───────────────────────────────────────────────────────
-    _user_id   = user["id"]
+    is_trial    = access_mode in ("trial", "trialing")
+    _user_id    = user["id"]
     _project_id = req.project_id
 
+    # Everything else runs inside generate() so we can emit status events
+    # immediately and keep the perceived latency near zero.
     async def generate() -> AsyncGenerator[str, None]:
+        from urllib.parse import unquote
+        import asyncio
+
         try:
-            # Signal trial mode to client so it can apply blur / gating
+            # ── 1. Acknowledge immediately ────────────────────────────────────
+            yield f"data: {json.dumps({'status': 'Reviewing your submission...'})}\n\n"
             if is_trial:
                 yield f"data: {json.dumps({'trial_mode': True})}\n\n"
+
+            # ── 2. Kick off OBC search in background thread immediately ───────
+            # It only needs req.message, so it can run while we download files.
+            loop = asyncio.get_event_loop()
+            obc_future = loop.run_in_executor(None, search_obc, req.message)
+
+            # ── 3. Download and process files ─────────────────────────────────
+            yield f"data: {json.dumps({'status': 'Reading uploaded documents...'})}\n\n"
+
+            doc_texts: list[dict]    = []
+            image_blocks: list[dict] = []
+
+            for f in req.files:
+                name      = unquote(f.get("name", "file"))
+                file_type = f.get("file_type") or f.get("type", "pdf")
+
+                if "data" not in f and "bucket" in f and "path" in f:
+                    try:
+                        raw = await loop.run_in_executor(
+                            None, download_from_storage, f["bucket"], f["path"], token
+                        )
+                    except Exception as e:
+                        print(f"Error fetching file {name}: {e}")
+                        continue
+                elif "data" in f:
+                    raw = base64.b64decode(f["data"])
+                else:
+                    continue
+
+                ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+                if ext == "pdf" or file_type == "pdf":
+                    await loop.run_in_executor(None, process_pdf, raw, name, doc_texts, image_blocks)
+                elif ext in IMAGE_TYPES or file_type in IMAGE_TYPES or file_type == "image":
+                    b64  = base64.b64encode(raw).decode() if "data" not in f else f["data"]
+                    mime = MEDIA_TYPE_MAP.get(ext, "image/png")
+                    image_blocks.append({
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": mime, "data": b64},
+                    })
+
+            # Deduplicate storage_paths vs files already fetched
+            already_fetched = {unquote(f["path"]) for f in req.files if "path" in f}
+            seen_paths: set[str] = set()
+
+            for raw_path in req.storage_paths:
+                path = unquote(raw_path)
+                if path in seen_paths or path in already_fetched:
+                    continue
+                seen_paths.add(path)
+                try:
+                    raw  = await loop.run_in_executor(
+                        None, download_from_storage, "permit-files", path, token
+                    )
+                    name = unquote(path.split("/")[-1])
+                    ext  = name.rsplit(".", 1)[-1].lower()
+                    if ext == "pdf":
+                        await loop.run_in_executor(None, process_pdf, raw, name, doc_texts, image_blocks)
+                    elif ext in IMAGE_TYPES:
+                        b64  = base64.b64encode(raw).decode()
+                        mime = MEDIA_TYPE_MAP.get(ext, "image/png")
+                        image_blocks.append({
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": mime, "data": b64},
+                        })
+                except Exception as e:
+                    print(f"Error fetching storage path {path}: {e}")
+
+            # ── 4. Collect OBC results (likely already done) ──────────────────
+            yield f"data: {json.dumps({'status': 'Cross-referencing Ontario Building Code...'})}\n\n"
+            try:
+                obc_chunks = await asyncio.wait_for(obc_future, timeout=8)
+            except Exception:
+                obc_chunks = []
+
+            # ── 5. Build Claude messages ──────────────────────────────────────
+            system_blocks = build_system_blocks(doc_texts, obc_chunks, is_trial=is_trial)
+            api_messages: list[dict] = []
+
+            if image_blocks:
+                image_blocks.append({
+                    "type": "text",
+                    "text": f"I've uploaded {len(image_blocks)} drawing(s). Analyze carefully for Ontario Building Code compliance.",
+                })
+                api_messages.append({"role": "user", "content": image_blocks})
+                api_messages.append({
+                    "role": "assistant",
+                    "content": f"I've reviewed the {len(image_blocks)-1} drawing(s) and am ready to analyze them.",
+                })
+
+            for m in req.history:
+                api_messages.append({"role": m.role, "content": m.content})
+
+            api_messages.append({"role": "user", "content": req.message})
+
+            # ── 6. Stream Claude response ─────────────────────────────────────
+            yield f"data: {json.dumps({'status': 'Generating report...'})}\n\n"
 
             token_count = 0
             async with ac_async.messages.stream(
@@ -728,12 +733,12 @@ async def analyze(req: AnalyzeRequest, request: Request):
             if token_count == 0:
                 yield f"data: {json.dumps({'text': 'I received your document but was unable to generate a response. Please try again.'})}\n\n"
 
-            # Consume the trial scan after a successful stream
             if is_trial:
                 mark_trial_scan_used(_user_id, _project_id)
                 yield f"data: {json.dumps({'trial_scan_complete': True})}\n\n"
 
             yield "data: [DONE]\n\n"
+
         except Exception as e:
             print(f"Stream error: {e}")
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
