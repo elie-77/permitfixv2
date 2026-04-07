@@ -894,7 +894,8 @@ async def analyze(req: AnalyzeRequest, request: Request):
             # ── 6. Stream Claude response ─────────────────────────────────────
             yield f"data: {json.dumps({'status': 'Generating report...'})}\n\n"
 
-            token_count = 0
+            token_count  = 0
+            report_parts = []
             async with ac_async.messages.stream(
                 model=MODEL,
                 max_tokens=600 if is_trial else 8192,
@@ -903,6 +904,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
             ) as stream:
                 async for text in stream.text_stream:
                     token_count += 1
+                    report_parts.append(text)
                     yield f"data: {json.dumps({'text': text})}\n\n"
 
             if token_count == 0:
@@ -911,6 +913,27 @@ async def analyze(req: AnalyzeRequest, request: Request):
             if is_trial:
                 mark_trial_scan_used(_user_id, _project_id)
                 yield f"data: {json.dumps({'trial_scan_complete': True})}\n\n"
+
+            # ── 7. Save analysis result to DB ─────────────────────────────────
+            if token_count > 0 and not is_trial:
+                def _save_analysis():
+                    try:
+                        file_paths = [
+                            f.get("path", f.get("name", ""))
+                            for f in req.files
+                        ] + list(seen_paths)
+                        row = {
+                            "user_id":      _user_id,
+                            "report_text":  "".join(report_parts),
+                            "municipality": detected_municipality or None,
+                            "file_paths":   file_paths or None,
+                        }
+                        if _project_id:
+                            row["project_id"] = _project_id
+                        sb.table("project_analyses").insert(row).execute()
+                    except Exception as e:
+                        print(f"Save analysis error: {e}")
+                await loop.run_in_executor(None, _save_analysis)
 
             # Deduct one credit after a successful paid submission
             if is_submission and token_count > 0:
