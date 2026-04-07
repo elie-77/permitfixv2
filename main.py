@@ -751,7 +751,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
 
             # Deduct one credit after a successful paid submission
             if is_submission and token_count > 0:
-                loop.run_in_executor(None, deduct_credit, _user_id)
+                await loop.run_in_executor(None, deduct_credit, _user_id)
 
             yield "data: [DONE]\n\n"
 
