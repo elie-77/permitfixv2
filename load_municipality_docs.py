@@ -42,6 +42,35 @@ CHUNK_OVERLAP        = 50
 BATCH_SIZE           = 8
 DOCS_DIR             = Path(__file__).parent / "municipality-registry" / "docs"
 
+# ── Document type detection from filename ─────────────────────────────────────
+# Name your files with these keywords and doc_type is set automatically.
+# Examples:
+#   "Vaughan Consolidated Bylaw 1-88 2024.pdf"       → consolidated_bylaw
+#   "Vaughan Amendment Summary 2023.pdf"             → amendment_index
+#   "Vaughan Amendment 2019-201.pdf"                 → amendment
+#   "Vaughan Appeal Index.pdf"                       → appeal_index
+#   "Vaughan OLT Appeal Decision 2021.pdf"           → olt_appeal
+#   "Vaughan Building Permit Guide.pdf"              → permit_guide
+DOC_TYPE_RULES = [
+    ("consolidated",  "consolidated_bylaw"),
+    ("amendment summary", "amendment_index"),
+    ("amendment index",   "amendment_index"),
+    ("appeal index",      "appeal_index"),
+    ("appeal decision",   "olt_appeal"),
+    ("olt appeal",        "olt_appeal"),
+    ("omb appeal",        "olt_appeal"),
+    ("amendment",         "amendment"),
+    ("permit guide",      "permit_guide"),
+    ("application guide", "permit_guide"),
+]
+
+def detect_doc_type(filename: str) -> str:
+    lower = filename.lower()
+    for keyword, doc_type in DOC_TYPE_RULES:
+        if keyword in lower:
+            return doc_type
+    return "base_bylaw"  # default if no keyword matches
+
 sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 vo = voyageai.Client(api_key=VOYAGE_API_KEY)
 
@@ -119,7 +148,7 @@ def already_loaded(filename: str, municipality_id: str) -> bool:
     return len(res.data) > 0
 
 
-def upsert_chunks(chunks: list, embeddings: list, municipality_id: str):
+def upsert_chunks(chunks: list, embeddings: list, municipality_id: str, doc_type: str):
     rows = [
         {
             "section_number": c["section_number"],
@@ -127,6 +156,7 @@ def upsert_chunks(chunks: list, embeddings: list, municipality_id: str):
             "content":        c["content"],
             "embedding":      e,
             "municipality_id": municipality_id,
+            "doc_type":        doc_type,
         }
         for c, e in zip(chunks, embeddings)
     ]
@@ -199,13 +229,17 @@ def main():
             print(f"  Run 2_load_to_supabase.py first or check the folder name.")
             continue
 
-        pdfs = list(muni_dir.glob("*.pdf")) + list(muni_dir.glob("*.PDF"))
-        if not pdfs:
-            print(f"  No PDFs found in {muni_dir}")
+        files = (
+            list(muni_dir.glob("*.pdf")) +
+            list(muni_dir.glob("*.PDF")) +
+            list(muni_dir.glob("*.txt"))
+        )
+        if not files:
+            print(f"  No PDFs or .txt files found in {muni_dir}")
             continue
 
-        for pdf_path in sorted(pdfs):
-            filename = pdf_path.name
+        for file_path in sorted(files):
+            filename = file_path.name
             print(f"\n  ── {filename}")
 
             if already_loaded(filename, municipality_id):
@@ -213,12 +247,17 @@ def main():
                 continue
 
             print(f"     Extracting text...")
-            pdf_bytes = pdf_path.read_bytes()
-            text = extract_text(pdf_bytes)
+            if file_path.suffix.lower() == ".txt":
+                text = file_path.read_text(encoding="utf-8", errors="ignore")
+            else:
+                pdf_bytes = file_path.read_bytes()
+                text = extract_text(pdf_bytes)
             if not text.strip():
-                print(f"     No extractable text — skipping (scanned PDF?)")
+                print(f"     No extractable text — skipping")
                 continue
 
+            doc_type = detect_doc_type(filename)
+            print(f"     Doc type: {doc_type}")
             print(f"     Chunking...")
             chunks = chunk_text(text, filename)
             print(f"     {len(chunks)} chunks")
@@ -228,7 +267,7 @@ def main():
                 batch      = chunks[i : i + BATCH_SIZE]
                 texts      = [c["content"] for c in batch]
                 embeddings = embed_batch(texts)
-                upsert_chunks(batch, embeddings, municipality_id)
+                upsert_chunks(batch, embeddings, municipality_id, doc_type)
                 print(f"     {min(i + BATCH_SIZE, len(chunks))}/{len(chunks)}")
                 time.sleep(0.5)
 

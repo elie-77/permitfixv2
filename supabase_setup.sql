@@ -72,8 +72,47 @@ CREATE TRIGGER stripe_customers_updated_at
   BEFORE UPDATE ON public.stripe_customers
   FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 
+-- ── Free trial tracking ───────────────────────────────────────────────────────
+-- 3-day gated trial: one scan, blurred results, no export, no bulk upload.
+ALTER TABLE public.stripe_customers
+  ADD COLUMN IF NOT EXISTS trial_started_at      TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS trial_expires_at      TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS trial_scan_used       BOOLEAN     DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS trial_scan_project_id TEXT;
+
+-- Service role can insert new rows (needed for /start-trial endpoint)
+DROP POLICY IF EXISTS "Service role can insert stripe_customers" ON public.stripe_customers;
+CREATE POLICY "Service role can insert stripe_customers"
+  ON public.stripe_customers FOR INSERT
+  TO service_role
+  WITH CHECK (true);
+
+-- ── Helper: activate trial for a new user ─────────────────────────────────────
+-- Called by FastAPI /start-trial or Lovable edge function after signup.
+CREATE OR REPLACE FUNCTION public.start_user_trial(p_user_id UUID)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_now   TIMESTAMPTZ := NOW();
+  v_exp   TIMESTAMPTZ := NOW() + INTERVAL '3 days';
+BEGIN
+  INSERT INTO public.stripe_customers
+    (user_id, subscription_status, plan_type, submissions_remaining,
+     trial_started_at, trial_expires_at, trial_scan_used)
+  VALUES
+    (p_user_id, 'inactive', 'per_submission', 0, v_now, v_exp, FALSE)
+  ON CONFLICT (user_id) DO UPDATE
+    SET trial_started_at  = EXCLUDED.trial_started_at,
+        trial_expires_at  = EXCLUDED.trial_expires_at,
+        trial_scan_used   = FALSE
+  WHERE public.stripe_customers.trial_started_at IS NULL
+    AND public.stripe_customers.subscription_status <> 'active';
+END;
+$$;
+
 -- ============================================================
 -- Pricing reference (for Stripe webhook / Lovable integration):
 --   $20 / submission  → plan_type = 'per_submission', increment submissions_remaining += 1
---   $77 / month       → plan_type = 'monthly', subscription_status = 'active'
+--   $200 / month      → plan_type = 'monthly', subscription_status = 'active'
+--   free trial        → trial_started_at set, trial_expires_at = started + 3 days
+--                       trial_scan_used tracks whether the one free scan was used
 -- ============================================================

@@ -1,0 +1,132 @@
+Ottawa Zoning By-law No. 2026-50
+Enacted by City Council: March 11, 2026
+Source: https://ottawa.ca/en/living-ottawa/laws-licences-and-permits/laws/laws-z/zoning-law-law-no-2026-50
+
+========================================
+PART 2 - GENERAL PROVISIONS
+========================================
+
+Section 201 - Adequate Services and Stormwater Management
+Requires confirmation of available stormwater infrastructure before land use expansion or structure placement, with exemptions for certain residential developments and additions under 55 square meters.
+
+Section 202 - Accessory Uses, Buildings and Structures
+Permits accessory structures on the same lot as principal uses. Establishes maximum heights (3.6 metres in Neighbourhood Zones, 6 metres in other transects), separation distances (1.2 metres in Neighbourhood Zones), and size limits (55 square metres cumulative in Neighbourhood Zones).
+
+Section 203 - Projections Above Height Limit
+Allows features like chimneys, dormers, and mechanical equipment to project above height restrictions with specified conditions.
+
+Section 204 - Projections into Yards
+Governs how building features project into required or provided yards. Examples include awnings (maximum 2 metres into interior side yards), decks (varies by lot depth), and eaves (1 metre for residential, 2 metres for others).
+
+Section 205 - Frontage on Public Street
+Requires minimum 3-metre frontage on improved public streets for development or lot severance, with exemptions for marine facilities and agricultural uses.
+
+Section 206 - Office to Residential Conversions
+Permits conversion of office/institutional buildings to residential use within existing building envelopes in specified zones.
+
+Section 207 - High-Rise Buildings
+Establishes minimum lot areas and tower separation distances varying by geographic area (Areas A-F).
+
+Section 208 - Amenity Area
+Requires 6 square metres of amenity area per dwelling unit for residential buildings with more than eight units.
+
+Section 209 - Heritage Provisions
+Applies additional requirements to designated heritage properties, including parking restrictions and reduced rear setback allowances.
+
+Section 210 - Underground Structures
+Mandates minimum soft landscaped areas (30+ square metres) in rear yards for below-grade building projections.
+
+Section 211 - Temporary Uses
+Permits temporary buildings, mobile offices, and structures for construction, events, or emergencies with relaxed setback requirements.
+
+Section 212 - Wayside Pits and Quarries
+Allows wayside mineral extraction operations in most zones except Environmental Protection zones.
+
+Section 213 - Utility Installation
+Permits utility infrastructure across zones with building compliance requirements. Allows battery energy storage systems with specified size and setback limitations.
+
+Section 214 - Alternative Setbacks for Tree Retention
+Permits up to 3-metre setback reductions to preserve protected trees, provided equivalent setback increases occur elsewhere.
+
+Section 215 - Parks
+Permits parks in most zones while following underlying zone provisions.
+
+Section 216 - Corner Sight Triangles
+Requires clear sightlines (no obstructions above 0.75 metres) within 6-metre triangles at residential corner lot intersections.
+
+Section 217 - Waste Management
+Mandates dedicated storage areas for garbage, organics, and recyclables based on dwelling unit count (minimum 5 square metres for 6-10 units, 10 square metres for 10+ units).
+
+
+========================================
+PART 4 - GENERAL SETBACKS
+========================================
+
+Section 401 - Minimum Distance Separation - Livestock Facilities
+New livestock facilities and expansions must comply with Ontario's Ministry of Agriculture and Food minimum distance separation formulae. Development near existing livestock operations must also follow these formulae. An exception permits up to two dwelling units on vacant lots (existing as of March 11, 2026) in residential zones, provided buildings are positioned furthest from the livestock operation and comply with applicable setback provisions.
+
+Section 402 - Setback from Railway Right-of-Ways
+In Rural Zones:
+- No obstruction to the vision of motor vehicle operators higher than one metre above grade is permitted within a 45-metre triangle from street and railway centerline intersections
+- Agricultural crops, chain link fences, and similar see-through features are permitted obstructions
+- Buildings within 30 metres of railway right-of-ways cannot be used for residential purposes, day care, or schools
+
+Section 403 - Setback from TransCanada Pipeline
+Buildings, structures, parking spaces, loading areas, bicycle parking, and associated driveways must maintain a minimum distance of 7 metres from a lot line abutting the FAC Open Space Facility zone containing a TransCanada Pipelines Limited right-of-way.
+
+Section 404 - Setbacks from Surface Water Features
+Buildings and structures, including sewage systems and parking areas, require setbacks of the greater distance: 30 metres from the top of bank of any surface water feature, or 15 metres from the existing stable top of slope for valley slopes or ravines. Council-approved alternate setbacks may apply under specific circumstances.
+
+
+========================================
+PART 7 - HOUSING PROVISIONS
+========================================
+
+Section 701 - Coach Houses
+Coach houses are permitted on residential lots meeting specific criteria:
+- Allowed locations: Lots with residential buildings containing up to 4 dwelling units in Neighbourhood Zones N1-N6 with municipal services, or up to 3 units in other zones; vertically attached buildings with up to 3 units; Village Residential Zones V1-V5 or VM Zone; AG, RR, RU, NU Zones with maximum 2 dwelling units
+- Minimum lot size: 0.6 hectares
+- Required services: Public or communal water and wastewater systems
+- Location on lot: Rear yard for lots under 0.4 hectares; adjacent to travelled public lane where applicable
+- Height limits: 4.5 metres in Rural Transect (6.1 metres with garage); 3.6 metres elsewhere
+- Setbacks: Front setback matches principal dwelling; exterior side matches principal dwelling; interior side 0.6-4 metres depending on transect; rear 0.6 metres; 1.2 metres from other buildings
+- Maximum footprint: 95 square metres in AG/RU zones; 50% of yard area (max 95 sq m) elsewhere
+- Roof restrictions: May not contain any rooftop garden, patio, terrace or other amenity area
+- Oversize units prohibited in coach houses
+
+Section 702 - Vertically Attached Dwelling Units
+- Definition: Vertical common wall minimum 5 metres deep and 2.5 metres high
+- Setbacks: Interior side and rear setbacks 0 metres between attached units (except N1, NU, DR, EP2, EP3 zones)
+- Maximum units: Eight principal units maximum in single row (exceptions apply in specific zones)
+- Additional units: Maximum two additional dwelling units per principal unit
+
+Section 703 - Planned Unit Development
+Permitted in residential zones where dwelling units are allowed:
+- Lot treatment: Planned unit development is considered one lot for zoning purposes
+- Building separation: Minimum 1.2 metres between buildings; 1.8 metres from private ways
+- Soft landscaping: Minimum 25% of lot area required
+- Accessory buildings: Maximum 4.5 metres height and 200 square metres for communal storage/parking
+- Permitted ancillary uses: Banks, community centres, medical facilities, offices, retail (limited to 200 sq m cumulative)
+
+Section 704 - Shelter Accommodation
+Emergency shelters permitted in Areas A-C and E (Downtown Core, Inner Urban, Outer Urban, Suburban Transects) excluding environmental protection and industrial zones; permitted in Area D Greenbelt Facility Zone only.
+
+Section 705 - Retirement Homes and Residential Care Facilities
+Permitted in any zone where residential units allowed; subject to applicable zoning provisions when in residential zones.
+
+Section 706 - Group Homes
+Permitted in any zone where residential units allowed, subject to zoning provisions.
+
+Section 707 - Rooming Houses
+- Occupancy limits: One rooming house maximum in Rural and N1-N4 zones; multiple permitted elsewhere
+- Bedrooms: No rooming unit in a rooming house may contain more than one bedroom
+- Dwelling units: Maximum one dwelling unit per building containing rooming house
+- Equivalency: Two rooming units equal one dwelling unit for zoning purposes
+
+Section 708 - Large Dwelling Units Requirements
+- Mid/high-rise buildings: Minimum 5% of units must have 3+ bedrooms or 80+ square metres
+- Low-rise (N1-N6, CM1-CM2 zones): Minimum one unit per six must have 3+ bedrooms or 80+ square metres on lots 450+ square metres (360+ in Downtown/Inner Urban areas)
+
+Section 709 - Oversize Dwelling Units
+- Residential zones: Maximum one per lot; cannot exceed 4 total dwelling units in building; maximum 16 bedrooms on lot
+- Other zones: Permitted where dwelling units allowed
