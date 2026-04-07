@@ -236,6 +236,66 @@ def deduct_credit(user_id: str):
         pass
 
 
+# ── Municipality auto-detection ───────────────────────────────────────────────
+
+# Ontario municipalities we support — checked against extracted addresses
+_KNOWN_MUNICIPALITIES = [
+    "Toronto", "Mississauga", "Brampton", "Hamilton", "Ottawa", "London",
+    "Markham", "Vaughan", "Kitchener", "Windsor", "Richmond Hill", "Oakville",
+    "Burlington", "Oshawa", "Barrie", "St. Catharines", "Cambridge", "Kingston",
+    "Whitby", "Guelph", "Ajax", "Thunder Bay", "Waterloo", "Chatham",
+    "Brantford", "Pickering", "Niagara Falls", "Peterborough", "Sudbury",
+    "Newmarket", "East Gwillimbury", "Georgina", "Uxbridge", "Aurora",
+    "Clarington", "Halton Hills", "Milton", "Caledon", "Orangeville",
+]
+
+def extract_municipality(doc_texts: list[dict]) -> str:
+    """
+    Scan the first ~3000 words of uploaded docs for an Ontario municipality name.
+    Checks common permit form fields first, then falls back to address pattern matching.
+    Returns the matched municipality name or "" if not found.
+    """
+    import re
+
+    # Gather text from first few doc pages
+    sample = ""
+    for doc in doc_texts[:3]:
+        sample += doc.get("text", doc.get("content", "")) + "\n"
+        if len(sample) > 6000:
+            break
+    sample = sample[:6000]
+
+    # 1. Explicit form field: "Municipality: Toronto" or "City/Town: Brampton"
+    field_match = re.search(
+        r'(?:municipality|city[/ ]*town|city|town|local\s+municipality)\s*[:/]\s*([A-Za-z .\''-]{2,40})',
+        sample, re.IGNORECASE
+    )
+    if field_match:
+        candidate = field_match.group(1).strip().rstrip(",.")
+        for muni in _KNOWN_MUNICIPALITIES:
+            if muni.lower() in candidate.lower():
+                return muni
+
+    # 2. Address pattern: "123 Main St, Toronto, ON" or "Toronto, Ontario"
+    addr_match = re.findall(
+        r',\s*([A-Za-z .\''-]{2,30}),?\s*(?:ON|Ontario)\b',
+        sample, re.IGNORECASE
+    )
+    for candidate in addr_match:
+        candidate = candidate.strip()
+        for muni in _KNOWN_MUNICIPALITIES:
+            if muni.lower() in candidate.lower():
+                return muni
+
+    # 3. Bare name anywhere in text (lower confidence — only if clearly present)
+    for muni in _KNOWN_MUNICIPALITIES:
+        pattern = r'\b' + re.escape(muni) + r'\b'
+        if re.search(pattern, sample, re.IGNORECASE):
+            return muni
+
+    return ""
+
+
 # ── OBC semantic search ───────────────────────────────────────────────────────
 
 def search_obc(query: str, municipality: str = "") -> list[dict]:
@@ -732,14 +792,37 @@ async def analyze(req: AnalyzeRequest, request: Request):
                 except Exception as e:
                     print(f"Error fetching storage path {path}: {e}")
 
-            # ── 4. Collect OBC results (likely already done) ──────────────────
+            # ── 4. Auto-detect municipality from uploaded docs ────────────────
+            detected_municipality = req.municipality  # use explicit value if provided
+            if not detected_municipality and doc_texts:
+                detected_municipality = extract_municipality(doc_texts)
+                if detected_municipality:
+                    print(f"Auto-detected municipality: {detected_municipality}")
+                    yield f"data: {json.dumps({'status': f'Detected municipality: {detected_municipality}...'})}\n\n"
+
+            # ── 5. Collect OBC results (likely already done) ──────────────────
             yield f"data: {json.dumps({'status': 'Cross-referencing Ontario Building Code...'})}\n\n"
             try:
                 obc_chunks = await asyncio.wait_for(obc_future, timeout=8)
             except Exception:
                 obc_chunks = []
 
-            # ── 5. Build Claude messages ──────────────────────────────────────
+            # If we detected a municipality that wasn't used in the initial search,
+            # run a targeted re-search now to pull in the right municipal bylaw chunks.
+            if detected_municipality and detected_municipality != req.municipality:
+                try:
+                    municipal_chunks = await loop.run_in_executor(
+                        None, search_obc, req.message, detected_municipality
+                    )
+                    if municipal_chunks:
+                        # Merge: keep OBC chunks (municipality_id=None) from original,
+                        # replace municipal chunks with the correctly-targeted ones
+                        obc_only = [c for c in obc_chunks if not c.get("municipality_id")]
+                        obc_chunks = obc_only + municipal_chunks
+                except Exception as e:
+                    print(f"Municipality re-search error: {e}")
+
+            # ── 6. Build Claude messages ──────────────────────────────────────
             system_blocks = build_system_blocks(doc_texts, obc_chunks, is_trial=is_trial)
             api_messages: list[dict] = []
 

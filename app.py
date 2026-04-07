@@ -5,7 +5,7 @@ import uuid
 import base64
 import shutil
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 import anthropic
 import streamlit as st
@@ -147,6 +147,169 @@ iframe[title="streamlit_analytics"] { display:none !important; }
     border-radius: 20px;
     font-size: 0.7rem;
     font-weight: 600;
+}
+
+/* ── Trial watermark ── */
+.trial-watermark {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(-25deg);
+    font-size: 7rem;
+    font-weight: 900;
+    color: rgba(180, 0, 0, 0.035);
+    pointer-events: none;
+    z-index: 9998;
+    user-select: none;
+    letter-spacing: 0.25em;
+    white-space: nowrap;
+}
+
+/* ── Trial banner ── */
+.trial-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.45rem 1rem;
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+.trial-banner a {
+    text-decoration: none;
+    border-radius: 5px;
+    padding: 0.2rem 0.65rem;
+    font-weight: 700;
+    font-size: 0.72rem;
+}
+
+/* ── Blur overlay container ── */
+.trial-blur-wrap {
+    position: relative;
+    margin-top: 1rem;
+}
+.trial-blur-inner {
+    filter: blur(5px);
+    user-select: none;
+    pointer-events: none;
+    max-height: 280px;
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+    mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+}
+.trial-blur-cta {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+.trial-cta-card {
+    background: white;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 1.5rem 2rem;
+    text-align: center;
+    max-width: 380px;
+    width: 90%;
+    box-shadow: 0 6px 28px rgba(0,0,0,0.13);
+}
+.trial-cta-card h3 {
+    font-size: 1rem;
+    font-weight: 700;
+    margin: 0 0 0.4rem;
+    color: #111827;
+}
+.trial-cta-card p {
+    font-size: 0.78rem;
+    color: #6b7280;
+    margin: 0 0 1rem;
+    line-height: 1.45;
+}
+.trial-btn-primary {
+    display: block;
+    background: #1b5e40;
+    color: white !important;
+    padding: 0.6rem 1rem;
+    border-radius: 7px;
+    text-decoration: none !important;
+    font-weight: 700;
+    font-size: 0.85rem;
+    margin-bottom: 0.5rem;
+}
+.trial-btn-secondary {
+    display: block;
+    border: 1px solid #d1d5db;
+    color: #374151 !important;
+    padding: 0.55rem 1rem;
+    border-radius: 7px;
+    text-decoration: none !important;
+    font-weight: 600;
+    font-size: 0.82rem;
+    margin-bottom: 0.4rem;
+}
+.trial-btn-note {
+    font-size: 0.7rem;
+    color: #9ca3af;
+    margin: 0.3rem 0 0;
+}
+
+/* ── Violation summary chips ── */
+.violation-count-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: #fee2e2;
+    color: #991b1b;
+    padding: 0.35rem 0.9rem;
+    border-radius: 20px;
+    font-weight: 700;
+    font-size: 1rem;
+    margin-right: 0.5rem;
+}
+.violation-category-chip {
+    display: inline-block;
+    background: #fef3c7;
+    color: #92400e;
+    padding: 0.2rem 0.6rem;
+    border-radius: 12px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    margin: 0.15rem 0.2rem 0.15rem 0;
+}
+
+/* ── Upgrade gate banner (inline, not modal) ── */
+.upgrade-gate {
+    background: #fffbeb;
+    border: 1px solid #fbbf24;
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    margin: 0.75rem 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+.upgrade-gate p {
+    margin: 0;
+    font-size: 0.82rem;
+    color: #374151;
+    line-height: 1.4;
+}
+.upgrade-gate-links {
+    display: flex;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+.upgrade-gate a {
+    text-decoration: none;
+    border-radius: 6px;
+    padding: 0.35rem 0.75rem;
+    font-weight: 700;
+    font-size: 0.77rem;
+    white-space: nowrap;
 }
 .plan-monthly { background: #dcfce7; color: #15803d; }
 .plan-credits { background: #dbeafe; color: #1d4ed8; }
@@ -358,8 +521,14 @@ def send_magic_link(email: str) -> bool:
 
 # ── Subscription check ────────────────────────────────────────────────────────
 
+ADMIN_EMAILS = {"elie.samaha77@gmail.com"}
+
+UPGRADE_URL_MONTHLY = f"{LOVABLE_URL}/pricing?plan=monthly&ref=app"
+UPGRADE_URL_SINGLE  = f"{LOVABLE_URL}/pricing?plan=single&ref=app"
+
+
 def get_subscription() -> dict:
-    """Cached per-session. Returns dict with status, plan_type, submissions_remaining."""
+    """Cached per-session. Returns sub dict including trial fields."""
     if "subscription" in st.session_state:
         return st.session_state.subscription
 
@@ -375,9 +544,16 @@ def get_subscription() -> dict:
                 "status":                d.get("subscription_status", "inactive"),
                 "plan_type":             d.get("plan_type", "per_submission"),
                 "submissions_remaining": d.get("submissions_remaining", 0),
+                # Trial fields
+                "trial_started_at":      d.get("trial_started_at"),
+                "trial_expires_at":      d.get("trial_expires_at"),
+                "trial_scan_used":       bool(d.get("trial_scan_used", False)),
+                "trial_scan_project_id": d.get("trial_scan_project_id", ""),
             }
         else:
-            sub = {"status": "none", "plan_type": None, "submissions_remaining": 0}
+            sub = {"status": "none", "plan_type": None, "submissions_remaining": 0,
+                   "trial_started_at": None, "trial_expires_at": None,
+                   "trial_scan_used": False}
     except Exception as e:
         sub = {"status": "error", "error": str(e)}
 
@@ -385,12 +561,101 @@ def get_subscription() -> dict:
     return sub
 
 
-def has_access() -> bool:
+def _trial_is_active(sub: dict | None = None) -> bool:
+    if sub is None:
+        sub = get_subscription()
+    exp = sub.get("trial_expires_at")
+    if not exp:
+        return False
+    return datetime.now(timezone.utc) < datetime.fromisoformat(exp.replace("Z", "+00:00"))
+
+
+def get_access_mode() -> str:
+    """
+    Returns one of:
+      'full'            — paid subscriber or admin bypass
+      'trial'           — active 3-day trial, scan not yet used
+      'trial_scan_used' — active trial window, but the one scan is consumed
+      'trial_expired'   — trial window ended
+      'blocked'         — no subscription, no trial record
+    """
+    user = st.session_state.get("sb_user")
+    if user and user.email in ADMIN_EMAILS:
+        return "full"
     sub = get_subscription()
-    if sub["status"] == "active":                                         return True
-    if sub.get("plan_type") == "per_submission" and \
-       sub.get("submissions_remaining", 0) > 0:                           return True
-    return False
+    if sub["status"] == "active":
+        return "full"
+    if sub.get("plan_type") == "per_submission" and sub.get("submissions_remaining", 0) > 0:
+        return "full"
+    if sub.get("trial_expires_at"):
+        if not _trial_is_active(sub):
+            return "trial_expired"
+        return "trial_scan_used" if sub.get("trial_scan_used") else "trial"
+    return "blocked"
+
+
+def has_access() -> bool:
+    """True when the user may enter the app (paid, trial active, or admin)."""
+    mode = get_access_mode()
+    return mode in ("full", "trial", "trial_scan_used")
+
+
+def trial_hours_remaining() -> int:
+    sub = get_subscription()
+    exp = sub.get("trial_expires_at")
+    if not exp:
+        return 0
+    delta = datetime.fromisoformat(exp.replace("Z", "+00:00")) - datetime.now(timezone.utc)
+    return max(0, int(delta.total_seconds() / 3600))
+
+
+def start_trial_for_user():
+    """Create a 3-day trial record in DB for the current user. Idempotent."""
+    user = st.session_state.get("sb_user")
+    if not user:
+        return
+    sub = get_subscription()
+    # Don't overwrite existing paid plan or already-started trial
+    if sub.get("status") == "active" or sub.get("trial_started_at"):
+        return
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(days=3)
+    try:
+        if not sub.get("plan_type"):  # no record yet
+            get_sb().table("stripe_customers").insert({
+                "user_id":               user.id,
+                "subscription_status":   "inactive",
+                "plan_type":             "per_submission",
+                "submissions_remaining": 0,
+                "trial_started_at":      now.isoformat(),
+                "trial_expires_at":      exp.isoformat(),
+                "trial_scan_used":       False,
+            }).execute()
+        else:
+            get_sb().table("stripe_customers").update({
+                "trial_started_at": now.isoformat(),
+                "trial_expires_at": exp.isoformat(),
+                "trial_scan_used":  False,
+            }).eq("user_id", user.id).execute()
+        st.session_state.pop("subscription", None)  # invalidate cache
+    except Exception:
+        pass
+
+
+def mark_trial_scan_used_local():
+    """Mark the trial scan as consumed in DB and update cached sub."""
+    user = st.session_state.get("sb_user")
+    if not user:
+        return
+    try:
+        get_sb().table("stripe_customers").update({
+            "trial_scan_used": True,
+        }).eq("user_id", user.id).execute()
+        # Update cached subscription
+        if "subscription" in st.session_state:
+            st.session_state.subscription["trial_scan_used"] = True
+    except Exception:
+        pass
 
 
 def deduct_submission():
@@ -408,6 +673,183 @@ def deduct_submission():
         st.session_state.subscription["submissions_remaining"] = new_count
     except Exception:
         pass
+
+
+# ── Trial UI helpers ──────────────────────────────────────────────────────────
+
+def show_trial_watermark():
+    st.markdown(
+        '<div class="trial-watermark">TRIAL</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def show_trial_banner():
+    """Countdown banner shown on every page during an active trial."""
+    sub = get_subscription()
+    if not sub.get("trial_expires_at"):
+        return
+    hours = trial_hours_remaining()
+    if hours <= 0:
+        label = "Trial expired"
+        color = "#ef4444"
+        bg    = "#fef2f2"
+        border= "#fca5a5"
+    elif hours < 24:
+        mins  = int((hours * 60) % 60)
+        label = f"{hours}h {mins}m left in your free trial"
+        color = "#b45309"
+        bg    = "#fffbeb"
+        border= "#fbbf24"
+    else:
+        days = hours // 24
+        label = f"{days} day{'s' if days != 1 else ''} left in your free trial"
+        color = "#1a5e40"
+        bg    = "#f0fdf4"
+        border= "#6ee7b7"
+
+    scan_note = ""
+    if get_access_mode() == "trial_scan_used":
+        scan_note = " · <b>1 scan used</b>"
+
+    st.markdown(
+        f'<div class="trial-banner" style="background:{bg};border:1px solid {border};color:{color}">'
+        f'<span>🔒 FREE TRIAL{scan_note} &nbsp;·&nbsp; {label}</span>'
+        f'<div style="display:flex;gap:0.5rem">'
+        f'<a href="{UPGRADE_URL_MONTHLY}" style="background:{color};color:white;'
+        f'border-radius:5px;padding:0.2rem 0.65rem">$200/mo →</a>'
+        f'<a href="{UPGRADE_URL_SINGLE}" style="border:1px solid {color};color:{color};'
+        f'border-radius:5px;padding:0.2rem 0.65rem">$20 one-time</a>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def show_upgrade_gate(trigger: str = "this feature"):
+    """Inline CTA shown when a trial user hits a locked action."""
+    st.markdown(
+        f'<div class="upgrade-gate">'
+        f'<p>🔒 <b>Upgrade to unlock {trigger}.</b><br>'
+        f'Full report · unlimited submissions · 2024 OBC auto-updates.</p>'
+        f'<div class="upgrade-gate-links">'
+        f'<a href="{UPGRADE_URL_MONTHLY}" style="background:#1b5e40;color:white">$200/mo →</a>'
+        f'<a href="{UPGRADE_URL_SINGLE}" style="background:white;border:1px solid #d1d5db;color:#374151">$20 one-time</a>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def parse_analysis_for_trial(text: str) -> dict:
+    """
+    Extract violation count, top-3 category labels, and the first full finding block
+    from a Claude compliance analysis. Returns dict with keys:
+      count, categories, exec_summary, example, rest_text, rest_preview
+    """
+    import re
+
+    # Executive summary block
+    exec_match = re.search(
+        r'##\s+Executive Summary\s*\n(.*?)(?=\n##|\Z)', text, re.DOTALL | re.IGNORECASE
+    )
+    exec_summary = exec_match.group(1).strip() if exec_match else ""
+
+    # All individual findings (### C1: ..., ### I1: ..., ### A1: ...)
+    finding_headers = re.findall(
+        r'###\s+([CIA]\d+)[:\s]+(.+?)(?:\n|$)', text
+    )
+    count      = len(finding_headers)
+    categories = [f"{num}: {name.strip()}" for num, name in finding_headers[:3]]
+
+    # Extract first finding's full body (up to the next ### or ##)
+    first_match = re.search(
+        r'(###\s+[CIA]\d+[:\s]+.+?)(?=\n###\s+[CIA]\d+|\n##\s+|\Z)',
+        text, re.DOTALL
+    )
+    example = first_match.group(1).strip() if first_match else ""
+
+    # Everything after the first example becomes the blurred section
+    if first_match:
+        rest_start = first_match.end()
+        rest_text  = text[rest_start:].strip()
+    else:
+        rest_text = ""
+
+    # Sanitised preview for blur (HTML-safe, truncated)
+    rest_preview = (
+        rest_text[:1800]
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+    return {
+        "count":       count,
+        "categories":  categories,
+        "exec_summary": exec_summary,
+        "example":     example,
+        "rest_text":   rest_text,
+        "rest_preview": rest_preview,
+    }
+
+
+def render_trial_analysis(text: str):
+    """Render a compliance analysis in trial mode: summary + 1 example + blur overlay."""
+    parsed = parse_analysis_for_trial(text)
+    count  = parsed["count"]
+
+    # ── Violation count + category chips ──────────────────────────────────────
+    chips_html = "".join(
+        f'<span class="violation-category-chip">{c}</span>'
+        for c in parsed["categories"]
+    )
+    extra = f" <span style='font-size:0.7rem;color:#b91c1c'>+{count - 1} more hidden</span>" if count > 1 else ""
+    st.markdown(
+        f'<div style="margin-bottom:0.75rem">'
+        f'<span class="violation-count-badge">⚠ {count} issue{"s" if count != 1 else ""} found</span>'
+        f'{extra}'
+        f'</div>'
+        f'<div style="margin-bottom:0.75rem">{chips_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Executive summary (free) ───────────────────────────────────────────────
+    if parsed["exec_summary"]:
+        st.markdown(parsed["exec_summary"])
+        st.markdown("---")
+
+    # ── First example finding (free) ──────────────────────────────────────────
+    if parsed["example"]:
+        st.markdown("**Full example finding:**")
+        st.markdown(parsed["example"])
+
+    # ── Blurred rest + upgrade overlay ────────────────────────────────────────
+    hidden = max(0, count - 1)
+    if parsed["rest_preview"]:
+        st.markdown(
+            f'<div class="trial-blur-wrap">'
+            f'  <div class="trial-blur-inner">'
+            f'    <pre style="white-space:pre-wrap;font-family:inherit;font-size:0.83rem;'
+            f'               line-height:1.55;color:#374151">{parsed["rest_preview"]}</pre>'
+            f'  </div>'
+            f'  <div class="trial-blur-cta">'
+            f'    <div class="trial-cta-card">'
+            f'      <div style="font-size:1.6rem;margin-bottom:0.4rem">🔒</div>'
+            f'      <h3>{hidden} more issue{"s" if hidden != 1 else ""} hidden</h3>'
+            f'      <p>Unlock the full report, unlimited submissions,<br>'
+            f'         and auto-update to 2024 OBC changes.</p>'
+            f'      <a class="trial-btn-primary" '
+            f'         href="{UPGRADE_URL_MONTHLY}">$200/mo — Unlock Full Report →</a>'
+            f'      <a class="trial-btn-secondary" '
+            f'         href="{UPGRADE_URL_SINGLE}">$20 — Single Report</a>'
+            f'      <p class="trial-btn-note">Single report includes prorate credit toward monthly.</p>'
+            f'    </div>'
+            f'  </div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    elif hidden > 0:
+        # Rest exists but no preview text (edge case) — just show CTA
+        show_upgrade_gate(f"{hidden} additional findings")
 
 
 # ── Login view ────────────────────────────────────────────────────────────────
@@ -445,7 +887,8 @@ def show_login_view():
             st.markdown("<div style='height:0.25rem'></div>", unsafe_allow_html=True)
             st.markdown(
                 "<p style='font-size:0.8rem;color:#6b7280;margin:0 0 0.75rem'>"
-                "Create your account — then choose a plan to get started.</p>",
+                "Create your free account — includes a <strong>3-day free trial</strong>: "
+                "run one address, see flagged violations, and preview your fix list.</p>",
                 unsafe_allow_html=True,
             )
             email_up  = st.text_input("Email", key="signup_email",
@@ -468,8 +911,9 @@ def show_login_view():
                             {"email": email_up.strip(), "password": pass_up}
                         )
                         if res.user:
-                            # Auto sign-in after signup
+                            # Auto sign-in after signup, then start free trial
                             if do_login(email_up, pass_up):
+                                start_trial_for_user()
                                 st.rerun()
                         else:
                             st.error("Could not create account. Try a different email.")
@@ -1097,6 +1541,8 @@ if not st.session_state.get("sb_user"):
 
         if _authed:
             st.session_state.pop("subscription", None)
+            # Auto-start trial for users who have no subscription record yet
+            start_trial_for_user()
             # Don't clear query_params or call st.rerun() here —
             # both trigger extra render cycles. The logged-in JS component
             # below removes the tokens from the URL via replaceState (no reload).
@@ -1171,9 +1617,15 @@ if not has_access():
 sub        = get_subscription()
 user_email = st.session_state.sb_user.email
 
+_access_mode = get_access_mode()
 if sub["status"] == "active":
     badge_cls  = "plan-monthly"
     badge_text = "Unlimited · Monthly"
+elif _access_mode in ("trial", "trial_scan_used"):
+    _hrs       = trial_hours_remaining()
+    _days      = _hrs // 24
+    badge_cls  = "plan-credits"
+    badge_text = f"Free Trial · {_days}d left" if _days > 0 else f"Free Trial · {_hrs}h left"
 elif sub.get("plan_type") == "per_submission":
     n          = sub.get("submissions_remaining", 0)
     badge_cls  = "plan-credits"
@@ -1215,6 +1667,12 @@ with nav_user:
 st.markdown("<div style='border-bottom:1px solid #f0f0f0;margin-bottom:0'></div>",
             unsafe_allow_html=True)
 
+# ── Trial watermark + banner (shown across all views while on trial) ──────────
+if _access_mode in ("trial", "trial_scan_used", "trial_expired"):
+    show_trial_watermark()
+    st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+    show_trial_banner()
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # HOME VIEW
@@ -1229,7 +1687,24 @@ if st.session_state.view == "home":
     with col_btn:
         st.markdown("<div style='margin-top:1.75rem'></div>", unsafe_allow_html=True)
         if st.button("＋ New", type="primary", use_container_width=True):
-            st.session_state.creating = True
+            # Trial: only one project allowed
+            if _access_mode in ("trial", "trial_scan_used"):
+                existing_projects = load_all_projects()
+                if len(existing_projects) >= 1:
+                    st.session_state["_show_upgrade_gate"] = "add a second address"
+                else:
+                    st.session_state.creating = True
+            elif _access_mode == "trial_expired":
+                st.session_state["_show_upgrade_gate"] = "create new projects (trial expired)"
+            else:
+                st.session_state.creating = True
+
+    # Trial upgrade gate (shown when user hits the limit)
+    if st.session_state.get("_show_upgrade_gate"):
+        show_upgrade_gate(st.session_state["_show_upgrade_gate"])
+        if st.button("Dismiss", key="dismiss_upgrade_gate"):
+            del st.session_state["_show_upgrade_gate"]
+            st.rerun()
 
     # New project form
     if st.session_state.creating:
@@ -1383,7 +1858,26 @@ else:
         # after new analysis messages arrive
         pdf_cache_key = f"pdf_{pid}_{len(st.session_state.messages)}"
 
-        if not has_analysis:
+        # Trial users can't export PDF
+        if _access_mode in ("trial", "trial_scan_used", "trial_expired"):
+            if st.button("📄 Report PDF 🔒", use_container_width=True,
+                         help="Upgrade to export PDF reports."):
+                st.session_state["_show_pdf_gate"] = True
+            if st.session_state.get("_show_pdf_gate"):
+                st.markdown(
+                    f'<div style="margin-top:0.5rem">'
+                    f'<a href="{UPGRADE_URL_MONTHLY}" style="display:block;background:#1b5e40;'
+                    f'color:white;padding:0.4rem;border-radius:6px;text-align:center;'
+                    f'text-decoration:none;font-size:0.78rem;font-weight:700;margin-bottom:0.3rem">'
+                    f'$200/mo — Unlock PDF →</a>'
+                    f'<a href="{UPGRADE_URL_SINGLE}" style="display:block;border:1px solid #d1d5db;'
+                    f'color:#374151;padding:0.4rem;border-radius:6px;text-align:center;'
+                    f'text-decoration:none;font-size:0.75rem;font-weight:600">$20 one-time</a>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+        elif not has_analysis:
             # No analysis yet — greyed out
             st.button("⬇ Report PDF", disabled=True, use_container_width=True,
                       help="Run an analysis first to generate a report.")
@@ -1424,63 +1918,84 @@ else:
         {i["name"] for i in st.session_state.images}
     )
 
+    # Trial: one file max, no bulk upload
+    _trial_file_limit = _access_mode in ("trial", "trial_scan_used", "trial_expired")
+    _at_file_limit    = _trial_file_limit and len(existing_names) >= 1
+
     with st.expander(
         f"📎  Attach files"
-        + (f"  ·  {len(existing_names)} attached" if existing_names else "  (PDFs & drawings)"),
+        + (f"  ·  {len(existing_names)} attached" if existing_names else "  (PDFs & drawings)")
+        + (" 🔒" if _at_file_limit else ""),
         expanded=not bool(existing_names),
     ):
-        up1, up2 = st.columns(2)
-        with up1:
-            pdf_files = st.file_uploader(
-                "PDF documents", type="pdf",
-                accept_multiple_files=True, key=f"pdf_{pid}",
-            )
-            if pdf_files:
-                for f in pdf_files:
-                    if f.name not in existing_names:
-                        with st.spinner(f"Reading {f.name}…"):
-                            try:
-                                raw   = f.read()
-                                text, pages = extract_pdf_text(raw)
-                                thumb = pdf_first_page_b64(raw)
-                                if text.strip():
+        if _at_file_limit:
+            show_upgrade_gate("bulk file upload and multiple documents")
+        else:
+            # Trial mode: allow only single-file uploads
+            _multi = not _trial_file_limit
+            up1, up2 = st.columns(2)
+            with up1:
+                pdf_files = st.file_uploader(
+                    "PDF documents", type="pdf",
+                    accept_multiple_files=_multi, key=f"pdf_{pid}",
+                )
+                if pdf_files:
+                    # Normalise: single-file uploader returns one object, not a list
+                    if not isinstance(pdf_files, list):
+                        pdf_files = [pdf_files]
+                    for f in pdf_files:
+                        if _trial_file_limit and len(existing_names) >= 1:
+                            show_upgrade_gate("multiple file uploads")
+                            break
+                        if f.name not in existing_names:
+                            with st.spinner(f"Reading {f.name}…"):
+                                try:
+                                    raw   = f.read()
+                                    text, pages = extract_pdf_text(raw)
+                                    thumb = pdf_first_page_b64(raw)
+                                    if text.strip():
+                                        save_file_to_project(pid, f.name, raw)
+                                        st.session_state.docs.append(
+                                            {"name": f.name, "text": text,
+                                             "page_count": pages, "thumb_b64": thumb})
+                                        existing_names.add(f.name)
+                                        meta["modified"] = now_str()
+                                        save_meta(meta)
+                                        st.success(f"✅ {f.name}")
+                                    else:
+                                        st.warning(f"⚠️ {f.name} — no extractable text")
+                                except Exception as e:
+                                    st.error(f"❌ {f.name}: {e}")
+
+            with up2:
+                img_files = st.file_uploader(
+                    "Drawings / images", type=IMAGE_TYPES,
+                    accept_multiple_files=_multi, key=f"img_{pid}",
+                )
+                if img_files:
+                    if not isinstance(img_files, list):
+                        img_files = [img_files]
+                    for f in img_files:
+                        if _trial_file_limit and len(existing_names) >= 1:
+                            show_upgrade_gate("multiple file uploads")
+                            break
+                        if f.name not in existing_names:
+                            with st.spinner(f"Loading {f.name}…"):
+                                try:
+                                    ext = f.name.rsplit(".", 1)[-1].lower()
+                                    raw = f.read()
+                                    b64 = base64.standard_b64encode(raw).decode()
                                     save_file_to_project(pid, f.name, raw)
-                                    st.session_state.docs.append(
-                                        {"name": f.name, "text": text,
-                                         "page_count": pages, "thumb_b64": thumb})
+                                    st.session_state.images.append(
+                                        {"name": f.name,
+                                         "media_type": MEDIA_TYPE_MAP.get(ext, "image/png"),
+                                         "b64": b64})
                                     existing_names.add(f.name)
                                     meta["modified"] = now_str()
                                     save_meta(meta)
                                     st.success(f"✅ {f.name}")
-                                else:
-                                    st.warning(f"⚠️ {f.name} — no extractable text")
-                            except Exception as e:
-                                st.error(f"❌ {f.name}: {e}")
-
-        with up2:
-            img_files = st.file_uploader(
-                "Drawings / images", type=IMAGE_TYPES,
-                accept_multiple_files=True, key=f"img_{pid}",
-            )
-            if img_files:
-                for f in img_files:
-                    if f.name not in existing_names:
-                        with st.spinner(f"Loading {f.name}…"):
-                            try:
-                                ext = f.name.rsplit(".", 1)[-1].lower()
-                                raw = f.read()
-                                b64 = base64.standard_b64encode(raw).decode()
-                                save_file_to_project(pid, f.name, raw)
-                                st.session_state.images.append(
-                                    {"name": f.name,
-                                     "media_type": MEDIA_TYPE_MAP.get(ext, "image/png"),
-                                     "b64": b64})
-                                existing_names.add(f.name)
-                                meta["modified"] = now_str()
-                                save_meta(meta)
-                                st.success(f"✅ {f.name}")
-                            except Exception as e:
-                                st.error(f"❌ {f.name}: {e}")
+                                except Exception as e:
+                                    st.error(f"❌ {f.name}: {e}")
 
     # File pills
     if existing_names:
@@ -1491,9 +2006,15 @@ else:
         st.markdown(f'<div class="file-pills">{pills}</div>', unsafe_allow_html=True)
 
     # ── Chat ──────────────────────────────────────────────────────────────────
+    _is_trial_view = _access_mode in ("trial", "trial_scan_used")
+
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+            # Blur analysis results for trial users
+            if msg["role"] == "assistant" and _is_trial_view:
+                render_trial_analysis(msg["content"])
+            else:
+                st.markdown(msg["content"])
 
     if not st.session_state.messages:
         if not existing_names:
@@ -1512,7 +2033,14 @@ else:
                 save_chat(pid, [])
                 st.rerun()
 
-    if prompt := st.chat_input("Ask about compliance, setbacks, OBC code citations…"):
+    # Trial: if scan is already used, show upgrade CTA instead of chat input
+    if _access_mode == "trial_scan_used":
+        show_upgrade_gate("run additional analyses")
+
+    elif _access_mode == "trial_expired":
+        show_upgrade_gate("access your full report (trial expired)")
+
+    elif prompt := st.chat_input("Ask about compliance, setbacks, OBC code citations…"):
         if not api_key or api_key == "your_api_key_here":
             st.error("Set ANTHROPIC_API_KEY in your HF Space secrets first.")
             st.stop()
@@ -1528,6 +2056,11 @@ else:
 
         with st.chat_message("assistant"):
             reply = stream_response(client, api_msgs, system)
+
+        # Mark trial scan as used after first analysis completes
+        if _access_mode == "trial":
+            mark_trial_scan_used_local()
+            st.session_state.pop("subscription", None)  # force cache refresh
 
         st.session_state.messages.append({"role": "assistant", "content": reply})
         save_chat(pid, st.session_state.messages)
