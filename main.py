@@ -299,7 +299,18 @@ def extract_municipality(doc_texts: list[dict]) -> str:
 # ── OBC semantic search ───────────────────────────────────────────────────────
 
 def search_obc(query: str, municipality: str = "") -> list[dict]:
-    """Embed query with Voyage AI, search pgvector, return OBC + municipal chunks."""
+    """
+    Embed query with Voyage AI and search pgvector.
+
+    When municipality is provided, runs TWO separate searches and combines:
+      1. OBC-only (municipality_id IS NULL) — top 15 provincial chunks
+      2. Municipal-only (municipality_id = muni_id) — top 15 bylaw chunks
+    This guarantees municipal bylaw sections always appear regardless of how
+    OBC sections rank by similarity (OBC pool is 20x larger and would otherwise
+    dominate a single combined search).
+
+    Without municipality: returns top OBC_MATCH_COUNT provincial chunks only.
+    """
     if not vo:
         return []
     try:
@@ -307,26 +318,59 @@ def search_obc(query: str, municipality: str = "") -> list[dict]:
         def _search():
             res = vo.embed([query], model=EMBED_MODEL, input_type="query")
             embedding = res.embeddings[0]
-            params = {
-                "query_embedding": embedding,
-                "match_count":     OBC_MATCH_COUNT,
-            }
-            # Look up municipality_id if a name was provided
-            if municipality:
-                muni_res = (
-                    sb.table("municipalities")
-                    .select("id")
-                    .ilike("name", f"%{municipality}%")
-                    .limit(1)
-                    .execute()
-                )
-                if muni_res.data:
-                    params["p_municipality_id"] = muni_res.data[0]["id"]
-            rows = sb.rpc("match_obc_sections", params).execute()
-            return rows.data or []
+
+            if not municipality:
+                rows = sb.rpc("match_obc_sections", {
+                    "query_embedding": embedding,
+                    "match_count":     OBC_MATCH_COUNT,
+                }).execute()
+                return rows.data or []
+
+            # Look up municipality_id
+            muni_res = (
+                sb.table("municipalities")
+                .select("id")
+                .ilike("name", f"%{municipality}%")
+                .limit(1)
+                .execute()
+            )
+            if not muni_res.data:
+                # Unknown municipality — fall back to OBC only
+                rows = sb.rpc("match_obc_sections", {
+                    "query_embedding": embedding,
+                    "match_count":     OBC_MATCH_COUNT,
+                }).execute()
+                return rows.data or []
+
+            muni_id = muni_res.data[0]["id"]
+
+            # Search 1 + 2 in parallel: OBC-only and municipal-only simultaneously
+            def _obc():
+                rows = sb.rpc("match_obc_sections", {
+                    "query_embedding": embedding,
+                    "match_count":     15,
+                }).execute().data or []
+                return [r for r in rows if not r.get("municipality_id")]
+
+            def _muni():
+                rows = sb.rpc("match_obc_sections", {
+                    "query_embedding":   embedding,
+                    "match_count":       20,
+                    "p_municipality_id": muni_id,
+                }).execute().data or []
+                return [r for r in rows if r.get("municipality_id")]
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                f_obc  = pool.submit(_obc)
+                f_muni = pool.submit(_muni)
+                obc_only  = f_obc.result()
+                muni_only = f_muni.result()
+
+            return obc_only + muni_only
+
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future = executor.submit(_search)
-            return future.result(timeout=8)
+            return future.result(timeout=12)
     except Exception as e:
         print(f"OBC search error: {e}")
         return []
@@ -391,22 +435,26 @@ OBC_EXPERT_SYSTEM = (
     "(e.g. 'OBC Table C-2', 'NBC Climate Data').\n\n"
 
     "## SEVERITY RULES:\n"
-    "1. Energy code (SB-12) non-compliance is always ❌ CRITICAL.\n"
-    "2. Conservation Authority approval is always ❌ CRITICAL and must appear near the top.\n"
-    "3. If the drawings reference an outdated OBC edition, classify as ❌ CRITICAL and place it "
-    "first, with a note that it has cascading effects on every other finding.\n"
-    "4. Thermal performance issues (floor-over-water, uninsulated assemblies) are ⚠️ IMPORTANT, "
-    "not advisory, when SB-12 is already flagged.\n"
-    "5. Do not include advisory items so minor they add no value (e.g. generic vapour barrier reminders "
-    "already implied by code compliance). Every advisory item must be actionable.\n"
-    "6. Complete all calculations — carry every limiting distance, structural, or area calculation "
-    "through to an explicit pass or fail conclusion.\n"
-    "7. **If a submission is compliant, say so clearly. Do NOT invent findings to fill sections.** "
-    "A clean submission should receive a clean report. If there are no critical findings, "
-    "write '✅ No critical findings — submission appears compliant with reviewed requirements.' "
-    "and omit the section entirely. Same for Important and Advisory sections — omit them if empty. "
-    "A report that says 'this looks good' is a valuable, honest result. Never manufacture issues "
-    "just to appear thorough.\n\n"
+    "1. SB-12 non-compliance is ❌ CRITICAL only if energy documentation was submitted and "
+    "shows a violation. If no energy docs were submitted, note it in one line under Advisory "
+    "as 'SB-12 compliance package not included — required before permit issuance.' "
+    "Do NOT make it a Critical finding.\n"
+    "2. Conservation Authority: flag as ❌ CRITICAL only if the submitted documents show "
+    "development in a regulated area without CA approval. If CA jurisdiction is simply unknown "
+    "from the documents, note it once under Advisory. Do not speculate.\n"
+    "3. Outdated OBC edition referenced in drawings is ❌ CRITICAL.\n"
+    "4. Thermal performance issues are ⚠️ IMPORTANT only if energy docs were submitted and "
+    "show a deficiency.\n"
+    "5. Missing documents (structural drawings, floor plans, etc.) are NOT critical findings. "
+    "They are a single ℹ️ Advisory line: 'X not included — submit before permit issuance.' "
+    "One line each. Never expand missing documents into multi-point critical findings.\n"
+    "6. Complete all calculations that CAN be done from the submitted documents. "
+    "Do not flag calculations as findings when the data to perform them wasn't submitted.\n"
+    "7. **If a submission is compliant, say so clearly and positively. Reward the effort.** "
+    "A clean report after revisions deserves genuine acknowledgment — e.g. 'This submission "
+    "is well-prepared and appears compliant with the reviewed requirements. The items below "
+    "are minor.' Omit Critical/Important/Advisory sections entirely when empty. "
+    "Never manufacture issues just to appear thorough.\n\n"
 
     "## CITATION INTEGRITY:\n"
     "1. Never put citation disclaimers inline in brackets within a finding. "
@@ -417,28 +465,45 @@ OBC_EXPERT_SYSTEM = (
     "do not guess or hedge inline.\n\n"
 
     "## ANALYSIS FOCUS — critical principle:\n"
-    "Analyze ONLY what the user submitted. Do not generate exhaustive lists of everything "
-    "they could or should have submitted. Your job is to review the documents in front of you, "
-    "not to educate them on the entire permit process from scratch.\n"
-    "- If a document is missing, make ONE brief note (e.g. 'Note: engineer's letter not included — "
-    "submit before application'). Do not expand it into a multi-point section.\n"
-    "- Never list generic permit requirements that have nothing to do with the specific documents submitted.\n"
-    "- Keep the report tight and focused: findings about what was submitted, "
-    "brief one-liners about what to add or confirm.\n\n"
+    "Analyze ONLY what is actually in the submitted documents. Your findings must be grounded "
+    "in what you can see, measure, or read — not in what was not submitted.\n"
+    "- A site plan submission should be reviewed as a site plan. Do not flag missing structural "
+    "drawings, SB-12 packages, or floor plans as Critical findings — those are separate documents "
+    "for a later stage. Mention them once as Advisory if relevant.\n"
+    "- If a document bears a municipal approval stamp, acknowledge that zoning review was "
+    "completed at that stage. Do not re-litigate zoning compliance as if it never happened.\n"
+    "- If dimensions on the drawing satisfy the bylaw requirements you can verify, say so: "
+    "'✅ Front yard setback: 6.0m provided, 4.5m required — compliant.'\n"
+    "- A finding must describe an actual problem visible in the documents, not a hypothetical "
+    "risk. 'SB-12 may be required' is not a finding — it is noise.\n"
+    "- Keep the report tight: real findings about what was submitted, "
+    "one-liners for anything to add at a later stage.\n\n"
 
     "## REQUIRED REPORT STRUCTURE — always follow this order:\n"
-    "1. Executive Summary (2-4 sentences: what was reviewed, top-line verdict — "
-    "if compliant, say so plainly here)\n"
-    "2. ❌ CRITICAL Findings (numbered C1, C2... — **omit this section entirely if none**)\n"
-    "3. ⚠️ IMPORTANT Findings (numbered I1, I2... — **omit this section entirely if none**)\n"
-    "4. ℹ️ ADVISORY Notes (numbered A1, A2... — **omit this section entirely if none**)\n"
-    "5. Summary Table (finding number | description | severity | action required)\n"
-    "6. Before You Submit (brief section — 3-6 bullet points MAX covering only items "
-    "directly relevant to what was submitted: e.g. 'Add engineer's stamp to structural drawings', "
-    "'Confirm CA jurisdiction before submitting'. Never list generic boilerplate items "
-    "that don't apply to the specific submission.)\n"
-    "7. Unverified Citations (list any bylaw sections or numbers that could not be confirmed "
-    "from the provided documents, with a note to verify before submission)\n\n"
+    "1. Executive Summary (2-4 sentences: what was reviewed, top-line verdict. "
+    "If the submission is well-prepared, say so warmly and specifically — e.g. "
+    "'This is a well-prepared site plan. Setbacks, lot coverage, and grading all appear "
+    "compliant. A few minor items are noted below for completeness.')\n"
+    "2. ✅ Compliant Items (only if there are verified passes — list what checked out "
+    "with citations, e.g. '✅ Rear yard setback: 7.5m provided vs 6.0m required (s.6.2.3)'). "
+    "**Omit if nothing could be positively verified.**\n"
+    "3. ❌ CRITICAL Findings (numbered C1, C2... — **omit entirely if none**)\n"
+    "4. ⚠️ IMPORTANT Findings (numbered I1, I2... — **omit entirely if none**)\n"
+    "5. ℹ️ ADVISORY Notes (numbered A1, A2... — **omit entirely if none**)\n"
+    "6. Summary Table (omit if no findings)\n"
+    "7. Before You Submit (3-6 bullets MAX. Include a brief checklist of what a complete "
+    "permit package typically requires — but frame it as helpful context, not a list of "
+    "failures. e.g. 'For a complete permit submission you will also need: structural drawings, "
+    "SB-12 energy compliance, floor plans.' One clean list, not repeated throughout the report.)\n"
+    "8. Unverified Citations (bylaw sections that could not be confirmed — omit if none)\n\n"
+
+    "## RESPONSE LENGTH — scale to the submission:\n"
+    "Match your response length to what was actually submitted. Do not pad.\n"
+    "- Single page or simple site plan → concise report, 300-500 words\n"
+    "- Multi-document package (3-5 files) → standard report, 500-900 words\n"
+    "- Large complex submission (6+ files, mixed occupancies, Part 3) → full report, up to 1200 words\n"
+    "If a submission has no findings, the entire response can be 150 words. That is correct.\n"
+    "Never repeat the same point in multiple sections. Say it once, in the right place.\n\n"
 
     "## FORMAT RULES:\n"
     "1. Use proper markdown hierarchy for ALL responses — this is rendered in a UI:\n"
@@ -561,7 +626,7 @@ MIN_TEXT_PER_PAGE = 80  # chars/page threshold — below this = scanned PDF
 
 
 def extract_pdf_text(file_bytes: bytes) -> tuple[str, int]:
-    """Extract text and tables from a PDF using PyMuPDF + pdfplumber for tables."""
+    """Extract text from a PDF using PyMuPDF (fast)."""
     import fitz
     pages = []
     total_chars = 0
@@ -581,27 +646,6 @@ def extract_pdf_text(file_bytes: bytes) -> tuple[str, int]:
     doc.close()
     if page_count > MAX_PDF_PAGES:
         pages.append(f"[Truncated: first {MAX_PDF_PAGES} of {page_count} pages]")
-
-    # Extract tables separately with pdfplumber and append as structured text
-    try:
-        table_blocks = []
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            for i, page in enumerate(pdf.pages[:MAX_PDF_PAGES]):
-                tables = page.extract_tables()
-                for t_idx, table in enumerate(tables):
-                    if not table:
-                        continue
-                    rows = []
-                    for row in table:
-                        cleaned = [str(cell).strip() if cell else "" for cell in row]
-                        rows.append(" | ".join(cleaned))
-                    block = f"[Table on page {i+1}]\n" + "\n".join(rows)
-                    table_blocks.append(block)
-        if table_blocks:
-            pages.append("\n\n--- EXTRACTED TABLES ---\n" + "\n\n".join(table_blocks))
-    except Exception:
-        pass
-
     return "\n\n".join(pages), page_count
 
 
@@ -738,16 +782,15 @@ async def analyze(req: AnalyzeRequest, request: Request):
             loop = asyncio.get_event_loop()
             obc_future = loop.run_in_executor(None, search_obc, req.message, req.municipality)
 
-            # ── 3. Download and process files ─────────────────────────────────
+            # ── 3. Download and process files (parallel) ──────────────────────
             yield f"data: {json.dumps({'status': 'Reading uploaded documents...'})}\n\n"
 
             doc_texts: list[dict]    = []
             image_blocks: list[dict] = []
 
-            for f in req.files:
+            async def fetch_and_process(f: dict):
                 name      = unquote(f.get("name", "file"))
                 file_type = f.get("file_type") or f.get("type", "pdf")
-
                 if "data" not in f and "bucket" in f and "path" in f:
                     try:
                         raw = await loop.run_in_executor(
@@ -755,49 +798,47 @@ async def analyze(req: AnalyzeRequest, request: Request):
                         )
                     except Exception as e:
                         print(f"Error fetching file {name}: {e}")
-                        continue
+                        return
                 elif "data" in f:
                     raw = base64.b64decode(f["data"])
                 else:
-                    continue
-
+                    return
                 ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
                 if ext == "pdf" or file_type == "pdf":
                     await loop.run_in_executor(None, process_pdf, raw, name, doc_texts, image_blocks)
                 elif ext in IMAGE_TYPES or file_type in IMAGE_TYPES or file_type == "image":
                     b64  = base64.b64encode(raw).decode() if "data" not in f else f["data"]
                     mime = MEDIA_TYPE_MAP.get(ext, "image/png")
-                    image_blocks.append({
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": mime, "data": b64},
-                    })
+                    image_blocks.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}})
 
-            # Deduplicate storage_paths vs files already fetched
-            already_fetched = {unquote(f["path"]) for f in req.files if "path" in f}
-            seen_paths: set[str] = set()
-
-            for raw_path in req.storage_paths:
-                path = unquote(raw_path)
-                if path in seen_paths or path in already_fetched:
-                    continue
-                seen_paths.add(path)
+            async def fetch_storage_path(path: str):
+                name = unquote(path.split("/")[-1])
+                ext  = name.rsplit(".", 1)[-1].lower()
                 try:
-                    raw  = await loop.run_in_executor(
+                    raw = await loop.run_in_executor(
                         None, download_from_storage, "permit-files", path, token
                     )
-                    name = unquote(path.split("/")[-1])
-                    ext  = name.rsplit(".", 1)[-1].lower()
                     if ext == "pdf":
                         await loop.run_in_executor(None, process_pdf, raw, name, doc_texts, image_blocks)
                     elif ext in IMAGE_TYPES:
                         b64  = base64.b64encode(raw).decode()
                         mime = MEDIA_TYPE_MAP.get(ext, "image/png")
-                        image_blocks.append({
-                            "type": "image",
-                            "source": {"type": "base64", "media_type": mime, "data": b64},
-                        })
+                        image_blocks.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}})
                 except Exception as e:
                     print(f"Error fetching storage path {path}: {e}")
+
+            # Collect all tasks and run in parallel
+            tasks = [fetch_and_process(f) for f in req.files]
+            already_fetched = {unquote(f["path"]) for f in req.files if "path" in f}
+            seen_paths: set[str] = set()
+            for raw_path in req.storage_paths:
+                path = unquote(raw_path)
+                if path not in seen_paths and path not in already_fetched:
+                    seen_paths.add(path)
+                    tasks.append(fetch_storage_path(path))
+
+            if tasks:
+                await asyncio.gather(*tasks)
 
             # ── 4. Auto-detect municipality from uploaded docs ────────────────
             detected_municipality = req.municipality  # use explicit value if provided
@@ -815,23 +856,18 @@ async def analyze(req: AnalyzeRequest, request: Request):
                 obc_chunks = []
 
             # If we detected a municipality that wasn't used in the initial search,
-            # run a targeted re-search now to pull in the right municipal bylaw chunks.
+            # re-run with the detected municipality. search_obc() now runs two
+            # separate queries (OBC-only + municipal-only) and combines them,
+            # guaranteeing bylaw sections appear regardless of OBC similarity ranking.
             if detected_municipality and detected_municipality != req.municipality:
                 try:
-                    # Use a rich permit-specific query so the vector search returns
-                    # the most relevant bylaw sections (setbacks, lot coverage, parking, etc.)
                     muni_query = (
                         f"{detected_municipality} zoning bylaw setbacks lot coverage "
                         f"building height parking requirements permitted uses {req.message}"
                     )
-                    municipal_chunks = await loop.run_in_executor(
+                    obc_chunks = await loop.run_in_executor(
                         None, search_obc, muni_query, detected_municipality
                     )
-                    if municipal_chunks:
-                        # Merge: keep OBC chunks (municipality_id=None) from original,
-                        # replace municipal chunks with the correctly-targeted ones
-                        obc_only = [c for c in obc_chunks if not c.get("municipality_id")]
-                        obc_chunks = obc_only + municipal_chunks
                 except Exception as e:
                     print(f"Municipality re-search error: {e}")
 
