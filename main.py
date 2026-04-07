@@ -357,9 +357,44 @@ OBC_EXPERT_SYSTEM = (
     "the submitted documents — do not default everything to one colour."
 )
 
+TRIAL_SYSTEM = (
+    "You are an expert Ontario building permit assistant. The user is on a free trial "
+    "and will only see a limited preview of your analysis.\n\n"
 
-def build_system_blocks(doc_texts: list[dict], obc_chunks: list[dict]) -> list[dict]:
-    blocks = [{"type": "text", "text": OBC_EXPERT_SYSTEM}]
+    "## YOUR TASK:\n"
+    "Analyze the submitted documents and produce a short preview report with exactly "
+    "three sections — nothing more:\n\n"
+
+    "### 1. Issues Found\n"
+    "State the total number of compliance issues identified (e.g. '14 issues found'). "
+    "Then give a one-sentence verdict on overall readiness.\n\n"
+
+    "### 2. Top 3 Issue Categories\n"
+    "List the three most significant categories of issues (e.g. Setbacks, Energy Code, "
+    "Structural). For each, write one sentence describing the nature of the problem. "
+    "Do NOT list all individual findings — just the categories.\n\n"
+
+    "### 3. Example Fix\n"
+    "Pick the single most important finding and show what the fix looks like: "
+    "state the issue, cite the specific OBC section or bylaw, and state the corrective action.\n\n"
+
+    "---\n"
+    "After the three sections, add this exact line:\n"
+    "> **Upgrade to Pro** to unlock all findings, citations, severity tiers, and the full compliance report.\n\n"
+
+    "## RULES:\n"
+    "- Do NOT produce a full report. Stop after the three sections above.\n"
+    "- Do NOT list every finding — only the three categories and one example.\n"
+    "- Use the same citation standards: bylaw name, number, and section.\n"
+    "- If the user asks a question instead of uploading a document, answer it briefly "
+    "(2-4 sentences max) then remind them that detailed analysis requires Pro.\n"
+    "- Minimal emojis: only ❌ ⚠️ ✅ where genuinely useful."
+)
+
+
+def build_system_blocks(doc_texts: list[dict], obc_chunks: list[dict], is_trial: bool = False) -> list[dict]:
+    system_prompt = TRIAL_SYSTEM if is_trial else OBC_EXPERT_SYSTEM
+    blocks = [{"type": "text", "text": system_prompt}]
 
     if obc_chunks:
         obc_text = "\n\n".join(
@@ -649,7 +684,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
     obc_chunks = search_obc(req.message)
 
     # ── Build messages ────────────────────────────────────────────────────────
-    system_blocks = build_system_blocks(doc_texts, obc_chunks)
+    system_blocks = build_system_blocks(doc_texts, obc_chunks, is_trial=is_trial)
 
     # History
     api_messages: list[dict] = []
@@ -682,7 +717,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
             token_count = 0
             async with ac_async.messages.stream(
                 model=MODEL,
-                max_tokens=8192,
+                max_tokens=600 if is_trial else 8192,
                 system=system_blocks,
                 messages=api_messages,
             ) as stream:
