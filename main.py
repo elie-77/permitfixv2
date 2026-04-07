@@ -970,180 +970,324 @@ async def generate_pdf(req: GeneratePdfRequest):
 # ── PDF generation ─────────────────────────────────────────────────────────────
 
 def _build_pdf(project_name: str, messages: list[Message], doc_names: list[str]) -> bytes:
-    from fpdf import FPDF
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+        HRFlowable, KeepTogether, PageBreak
+    )
+    from reportlab.platypus import ListFlowable, ListItem
+    from datetime import datetime
 
-    def safe(text: str) -> str:
-        text = str(text)
-        # Translate common Unicode to readable ASCII before stripping
-        _UNI = {
-            "\u2014": "-",    # em dash —
-            "\u2013": "-",    # en dash –
-            "\u2022": "-",    # bullet •
-            "\u2018": "'",    # left single quote
-            "\u2019": "'",    # right single quote
-            "\u201c": '"',    # left double quote
-            "\u201d": '"',    # right double quote
-            "\u2026": "...",  # ellipsis
-            "\u00a0": " ",    # non-breaking space
-            "\u2264": "<=",   # ≤
-            "\u2265": ">=",   # ≥
-            "\u00b0": " deg", # °
-            "\u2705": "[OK]", # ✅
-            "\u274c": "[X]",  # ❌
-            "\u26a0": "[!]",  # ⚠
-            "\ufe0f": "",     # variation selector (emoji modifier)
-            "\u2139": "[i]",  # ℹ
-            "\U0001f7e1": "[~]",  # 🟡
-            "\U0001f4cb": "",     # 📋
-        }
-        for ch, rep in _UNI.items():
-            text = text.replace(ch, rep)
-        return text.encode("latin-1", errors="ignore").decode("latin-1")
+    # ── Colour palette ────────────────────────────────────────────────────────
+    NAVY        = colors.HexColor("#1B2B4B")   # primary headings
+    DARK_GRAY   = colors.HexColor("#2C3E50")   # body text
+    MID_GRAY    = colors.HexColor("#7F8C8D")   # meta / captions
+    LIGHT_GRAY  = colors.HexColor("#F4F6F8")   # table row bg
+    WHITE       = colors.white
+    RED         = colors.HexColor("#C0392B")   # critical
+    AMBER       = colors.HexColor("#D4691E")   # important / warning
+    GREEN       = colors.HexColor("#1E7E45")   # compliant
+    BLUE        = colors.HexColor("#2471A3")   # advisory / neutral
+    RULE_COLOR  = colors.HexColor("#DDE1E7")   # horizontal rules
 
-    def clean(text: str) -> str:
-        text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-        text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
-        text = re.sub(r"\*(.+?)\*",     r"\1", text)
-        text = re.sub(r"__(.+?)__",     r"\1", text)
-        text = re.sub(r"`{1,3}[^`]*`{1,3}", "", text)
-        text = re.sub(r"\[(.+?)\]\(.+?\)", r"\1", text)
-        return safe(text)
+    # ── Paragraph styles ──────────────────────────────────────────────────────
+    def S(name, **kw):
+        return ParagraphStyle(name, **kw)
 
-    def hdr(line: str) -> str:
-        return safe(re.sub(r"^#{1,6}\s+", "", line).strip())
+    base = dict(fontName="Helvetica", fontSize=10.5, leading=16,
+                textColor=DARK_GRAY, spaceAfter=6)
 
-    def is_md_header(line: str) -> bool:
-        return bool(re.match(r"^#{1,6}\s+", line))
-
-    def is_bullet(line: str) -> bool:
-        return bool(re.match(r"^\s*[-*]\s+", line))
-
-    def bullet_body(line: str) -> str:
-        return clean(re.sub(r"^\s*[-*]\s+", "", line))
-
-    CRITICAL_KW = [
-        "non-compliant","not compliant","does not comply","does not meet",
-        "violation","violates","action required","must be corrected",
-        "fails to","not permitted","exceeds maximum","below minimum",
-        "insufficient","deficient","missing required","inadequate",
-        "not acceptable","not allowed",
-    ]
-    GOOD_KW = [
-        "compliant","meets requirement","satisfies","no issue",
-        "no violation","conforms","within the required","no deficien",
-        "acceptable","adequate","passes","appears to meet",
-    ]
-    WARN_KW = [
-        "review","verify","unclear","consider","may not","recommend",
-        "suggest","should ensure","confirm","cannot verify","unable to",
-        "potential","could","needs clarification",
-    ]
-
-    PALETTE = {
-        "good":     ((22, 101, 52),   (240, 253, 244), "COMPLIANT"),
-        "warning":  ((146, 64, 14),   (255, 251, 235), "REVIEW REQUIRED"),
-        "critical": ((153, 27, 27),   (254, 242, 242), "ACTION REQUIRED"),
-        "neutral":  ((30, 58, 138),   (239, 246, 255), "NOTE"),
+    sty = {
+        "h1": S("h1", fontName="Helvetica-Bold", fontSize=18,
+                 textColor=NAVY, spaceBefore=18, spaceAfter=6, leading=22),
+        "h2": S("h2", fontName="Helvetica-Bold", fontSize=13,
+                 textColor=NAVY, spaceBefore=14, spaceAfter=4, leading=17),
+        "h3": S("h3", fontName="Helvetica-Bold", fontSize=11,
+                 textColor=DARK_GRAY, spaceBefore=10, spaceAfter=3, leading=15),
+        "body": S("body", **base),
+        "bullet": S("bullet", **{**base, "leftIndent": 16, "bulletIndent": 4,
+                                  "spaceBefore": 1, "spaceAfter": 1}),
+        "meta": S("meta", fontName="Helvetica-Oblique", fontSize=9,
+                   textColor=MID_GRAY, leading=13, spaceAfter=4),
+        "badge_critical": S("badge_c", fontName="Helvetica-Bold", fontSize=9,
+                             textColor=WHITE, leading=12),
+        "badge_good":     S("badge_g", fontName="Helvetica-Bold", fontSize=9,
+                             textColor=WHITE, leading=12),
+        "badge_warn":     S("badge_w", fontName="Helvetica-Bold", fontSize=9,
+                             textColor=WHITE, leading=12),
+        "badge_info":     S("badge_i", fontName="Helvetica-Bold", fontSize=9,
+                             textColor=WHITE, leading=12),
+        "table_hdr": S("th", fontName="Helvetica-Bold", fontSize=9,
+                        textColor=WHITE, leading=12, alignment=TA_LEFT),
+        "table_cell": S("td", fontName="Helvetica", fontSize=9,
+                         textColor=DARK_GRAY, leading=13, alignment=TA_LEFT),
+        "footer": S("footer", fontName="Helvetica", fontSize=8,
+                    textColor=MID_GRAY, alignment=TA_CENTER),
     }
 
-    def classify(header_str: str, body_str: str) -> str:
-        t = (header_str + " " + body_str[:600]).lower()
-        if any(k in t for k in CRITICAL_KW): return "critical"
-        if any(k in t for k in GOOD_KW):     return "good"
-        if any(k in t for k in WARN_KW):     return "warning"
-        return "neutral"
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def esc(text: str) -> str:
+        """Escape XML special chars for ReportLab Paragraph."""
+        return (str(text)
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;"))
 
-    def parse_sections(text: str):
-        sections, cur_hdr, cur_body = [], None, []
-        for line in text.split("\n"):
-            if is_md_header(line):
-                if cur_hdr is not None or cur_body:
-                    sections.append((cur_hdr, cur_body))
-                cur_hdr, cur_body = hdr(line), []
-            else:
-                cur_body.append(line)
-        if cur_hdr is not None or cur_body:
-            sections.append((cur_hdr, cur_body))
-        return sections
+    def md_to_rl(text: str) -> str:
+        """Convert markdown bold/italic inline markup to ReportLab XML."""
+        text = esc(text)
+        text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+        text = re.sub(r"\*(.+?)\*",     r"<i>\1</i>", text)
+        text = re.sub(r"__(.+?)__",     r"<b>\1</b>", text)
+        text = re.sub(r"`([^`]+)`",     r"<font name='Courier'>\1</font>", text)
+        # emoji → text
+        replacements = {
+            "✅": "<b>✓</b>", "❌": "✗", "⚠️": "!", "⚠": "!",
+            "ℹ️": "i", "🟡": "~", "—": "-", "–": "-",
+            "\u00a0": " ",
+        }
+        for ch, rep in replacements.items():
+            text = text.replace(ch, rep)
+        return text
 
-    def render_section(pdf, title, body_lines, status):
-        (hr, hg, hb), (br, bg, bb), badge = PALETTE[status]
+    def strip_md_header(line: str) -> str:
+        return re.sub(r"^#{1,6}\s+", "", line).strip()
 
-        pdf.set_fill_color(hr, hg, hb)
-        pdf.set_text_color(255, 255, 255)
-        pdf.set_font("Helvetica", "B", 9)
-        pdf.set_x(10)
-        label = f"  {badge}"
+    def is_header(line: str):
+        m = re.match(r"^(#{1,6})\s+", line)
+        return (len(m.group(1)), strip_md_header(line)) if m else None
+
+    def is_bullet_line(line: str) -> bool:
+        return bool(re.match(r"^\s*[-*•]\s+", line))
+
+    def bullet_text(line: str) -> str:
+        return re.sub(r"^\s*[-*•]\s+", "", line).strip()
+
+    def is_table_line(line: str) -> bool:
+        return line.strip().startswith("|") and "|" in line[1:]
+
+    def is_table_sep(line: str) -> bool:
+        return bool(re.match(r"^\s*\|[-| :]+\|\s*$", line))
+
+    def parse_table(lines: list) -> list:
+        """Parse markdown table lines into list-of-lists."""
+        rows = []
+        for line in lines:
+            if is_table_sep(line):
+                continue
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            rows.append(cells)
+        return rows
+
+    def badge_pill(label: str, bg_color) -> Table:
+        """Render a small coloured badge inline."""
+        p = Paragraph(f"<b>{esc(label)}</b>",
+                      ParagraphStyle("bp", fontName="Helvetica-Bold",
+                                     fontSize=8, textColor=WHITE, leading=10))
+        t = Table([[p]], colWidths=[len(label)*5.5 + 12])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,-1), bg_color),
+            ("ROUNDEDCORNERS", [3]),
+            ("TOPPADDING", (0,0), (-1,-1), 3),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+            ("LEFTPADDING", (0,0), (-1,-1), 6),
+            ("RIGHTPADDING", (0,0), (-1,-1), 6),
+        ]))
+        return t
+
+    def finding_block(title: str, body_lines: list, accent: colors.Color) -> list:
+        """Render a finding as a left-accented card."""
+        elems = []
+        inner = []
         if title:
-            label += f"  |  {safe(title)}"
-        pdf.cell(190, 7, label, fill=True, ln=True)
-
-        pdf.set_fill_color(br, bg, bb)
-        pdf.set_text_color(40, 40, 40)
-        body_str = " ".join(body_lines)
-        pdf.set_x(10)
-        pdf.rect(10, pdf.get_y(), 190, 0.3, style="F")
-
-        y_start = pdf.get_y() + 1
-        pdf.set_xy(10, y_start)
-        pdf.set_font("Helvetica", "", 8.5)
-
+            inner.append(Paragraph(md_to_rl(title), sty["h3"]))
         for line in body_lines:
             line = line.rstrip()
-            if not line:
-                pdf.ln(2)
+            if not line or re.match(r"^-{3,}$", line):
                 continue
-            if is_bullet(line):
-                pdf.set_x(16)
-                pdf.set_font("Helvetica", "", 8.5)
-                pdf.multi_cell(182, 5, f"-  {bullet_body(line)}", fill=False)
+            if is_bullet_line(line):
+                inner.append(Paragraph(
+                    f"• {md_to_rl(bullet_text(line))}", sty["bullet"]))
+            elif is_table_line(line):
+                pass  # tables handled separately below
             else:
-                cleaned = clean(line)
-                if cleaned.strip():
-                    pdf.set_x(12)
-                    pdf.multi_cell(186, 5, cleaned, fill=False)
+                txt = md_to_rl(line)
+                if txt.strip():
+                    inner.append(Paragraph(txt, sty["body"]))
 
-        pdf.set_fill_color(br, bg, bb)
-        pdf.rect(10, pdf.get_y(), 190, 2, style="F")
-        pdf.ln(4)
+        if not inner:
+            return []
 
-    # Build PDF
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
-    pdf.set_margins(10, 10, 10)
+        # Wrap in a left-border table
+        content_col = inner
+        card = Table(
+            [[content_col]],
+            colWidths=[5.9 * inch],
+        )
+        card.setStyle(TableStyle([
+            ("LEFTPADDING",   (0,0), (-1,-1), 14),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 8),
+            ("TOPPADDING",    (0,0), (-1,-1), 6),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+            ("LINEAFTER",     (0,0), (0,-1),  0, accent),  # no right border
+            ("LINEBEFORE",    (0,0), (0,-1),  3, accent),  # left accent bar
+            ("BACKGROUND",    (0,0), (-1,-1), colors.HexColor("#FAFBFC")),
+            ("ROUNDEDCORNERS", [2]),
+        ]))
+        elems.append(card)
+        elems.append(Spacer(1, 8))
+        return elems
 
-    # Header
-    pdf.set_fill_color(22, 101, 52)
-    pdf.rect(0, 0, 210, 28, style="F")
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.set_xy(10, 8)
-    pdf.cell(190, 8, safe("PermitFix AI - Compliance Report"), ln=True)
-    pdf.set_font("Helvetica", "", 9)
-    pdf.set_x(10)
-    from datetime import datetime
-    pdf.cell(190, 5,
-             f"Project: {safe(project_name)}   |   Generated: {datetime.now().strftime('%B %d, %Y')}",
-             ln=True)
-    pdf.ln(6)
+    # ── Page template with header/footer ──────────────────────────────────────
+    buf = io.BytesIO()
+    generated = datetime.now().strftime("%B %d, %Y")
 
+    def on_page(canvas, doc):
+        W, H = letter
+        # Top bar
+        canvas.setFillColor(NAVY)
+        canvas.rect(0, H - 36, W, 36, fill=1, stroke=0)
+        canvas.setFillColor(WHITE)
+        canvas.setFont("Helvetica-Bold", 11)
+        canvas.drawString(0.6 * inch, H - 22, "PermitFix AI")
+        canvas.setFont("Helvetica", 9)
+        canvas.drawRightString(W - 0.6 * inch, H - 22,
+                               f"{project_name}  |  {generated}")
+        # Bottom rule + page number
+        canvas.setStrokeColor(RULE_COLOR)
+        canvas.setLineWidth(0.5)
+        canvas.line(0.6 * inch, 0.55 * inch, W - 0.6 * inch, 0.55 * inch)
+        canvas.setFillColor(MID_GRAY)
+        canvas.setFont("Helvetica", 8)
+        canvas.drawCentredString(W / 2, 0.35 * inch,
+                                 f"Page {doc.page}  |  Confidential — Generated by PermitFix AI")
+
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=letter,
+        leftMargin=0.65 * inch,
+        rightMargin=0.65 * inch,
+        topMargin=0.75 * inch,
+        bottomMargin=0.7 * inch,
+    )
+
+    # ── Build story ───────────────────────────────────────────────────────────
+    story = []
+
+    # Title block
+    story.append(Spacer(1, 0.15 * inch))
+    story.append(Paragraph("Compliance Review Report", sty["h1"]))
     if doc_names:
-        pdf.set_text_color(80, 80, 80)
-        pdf.set_font("Helvetica", "I", 8)
-        pdf.set_x(10)
-        pdf.cell(190, 5, f"Documents reviewed: {', '.join(safe(d) for d in doc_names)}", ln=True)
-        pdf.ln(3)
+        meta = "Documents reviewed: " + ", ".join(doc_names)
+        story.append(Paragraph(meta, sty["meta"]))
+    story.append(HRFlowable(width="100%", thickness=0.5,
+                             color=RULE_COLOR, spaceAfter=12))
 
-    # Body — only assistant messages
+    # Parse and render all assistant messages
     for msg in messages:
         if msg.role != "assistant":
             continue
-        for title, body_lines in parse_sections(msg.content):
-            body_str = " ".join(body_lines)
-            status = classify(title or "", body_str)
-            render_section(pdf, title, body_lines, status)
 
-    out = io.BytesIO()
-    pdf.output(out)
-    return out.getvalue()
+        lines = msg.content.split("\n")
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+
+            # Skip raw horizontal rules
+            if re.match(r"^-{3,}$", line.strip()):
+                story.append(Spacer(1, 6))
+                i += 1
+                continue
+
+            # Markdown headers
+            hinfo = is_header(line)
+            if hinfo:
+                level, title_text = hinfo
+                if level == 1:
+                    story.append(HRFlowable(width="100%", thickness=0.5,
+                                             color=RULE_COLOR, spaceBefore=8, spaceAfter=4))
+                    story.append(Paragraph(md_to_rl(title_text), sty["h1"]))
+                elif level == 2:
+                    story.append(Paragraph(md_to_rl(title_text), sty["h2"]))
+                elif level >= 3:
+                    # Detect finding type from title
+                    tl = title_text.lower()
+                    if any(k in tl for k in ["critical", "action required", "❌", "c1","c2","c3","c4","c5"]):
+                        accent = RED
+                    elif any(k in tl for k in ["important", "⚠", "i1","i2","i3","i4","i5"]):
+                        accent = AMBER
+                    elif any(k in tl for k in ["compliant", "✅", "passed", "approved"]):
+                        accent = GREEN
+                    else:
+                        accent = BLUE
+
+                    # Collect body lines for this finding
+                    body = []
+                    i += 1
+                    while i < len(lines):
+                        if is_header(lines[i]):
+                            break
+                        body.append(lines[i])
+                        i += 1
+                    story.extend(finding_block(title_text, body, accent))
+                    continue
+                i += 1
+                continue
+
+            # Markdown table
+            if is_table_line(line):
+                tbl_lines = []
+                while i < len(lines) and (is_table_line(lines[i]) or is_table_sep(lines[i])):
+                    tbl_lines.append(lines[i])
+                    i += 1
+                rows = parse_table(tbl_lines)
+                if rows:
+                    col_count = max(len(r) for r in rows)
+                    # Pad rows
+                    rows = [r + [""] * (col_count - len(r)) for r in rows]
+                    avail = 5.9 * inch
+                    col_w = [avail / col_count] * col_count
+
+                    tbl_data = []
+                    for ri, row in enumerate(rows):
+                        style = sty["table_hdr"] if ri == 0 else sty["table_cell"]
+                        tbl_data.append([Paragraph(md_to_rl(c), style) for c in row])
+
+                    tbl = Table(tbl_data, colWidths=col_w, repeatRows=1)
+                    ts = TableStyle([
+                        ("BACKGROUND",    (0,0), (-1,0),  NAVY),
+                        ("BACKGROUND",    (0,1), (-1,-1), WHITE),
+                        ("ROWBACKGROUNDS",(0,1), (-1,-1), [WHITE, LIGHT_GRAY]),
+                        ("GRID",          (0,0), (-1,-1), 0.4, RULE_COLOR),
+                        ("TOPPADDING",    (0,0), (-1,-1), 5),
+                        ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+                        ("LEFTPADDING",   (0,0), (-1,-1), 7),
+                        ("RIGHTPADDING",  (0,0), (-1,-1), 7),
+                        ("VALIGN",        (0,0), (-1,-1), "TOP"),
+                    ])
+                    tbl.setStyle(ts)
+                    story.append(tbl)
+                    story.append(Spacer(1, 10))
+                continue
+
+            # Bullet
+            if is_bullet_line(line):
+                story.append(Paragraph(
+                    f"• {md_to_rl(bullet_text(line))}", sty["bullet"]))
+                i += 1
+                continue
+
+            # Plain text
+            txt = md_to_rl(line)
+            if txt.strip():
+                story.append(Paragraph(txt, sty["body"]))
+            elif story:
+                story.append(Spacer(1, 4))
+            i += 1
+
+    doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
+    return buf.getvalue()
