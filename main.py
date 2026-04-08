@@ -444,7 +444,21 @@ def search_obc(query: str, municipality: str = "") -> list[dict]:
                     "match_count":       20,
                     "p_municipality_id": muni_id,
                 }).execute().data or []
-                return [r for r in rows if r.get("municipality_id")]
+                muni_rows = [r for r in rows if r.get("municipality_id")]
+
+                # Fallback: if municipality_id isn't set on the bylaw rows
+                # (load_obc.py doesn't populate that field), run a semantic
+                # search scoped to titles matching the municipality name so
+                # we get the most relevant chunks rather than insertion order.
+                if not muni_rows:
+                    title_rows = sb.rpc("match_sections_by_title", {
+                        "query_embedding": embedding,
+                        "title_filter":    municipality,
+                        "match_count":     15,
+                    }).execute().data or []
+                    return title_rows
+
+                return muni_rows
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
                 f_obc  = pool.submit(_obc)
