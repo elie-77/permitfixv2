@@ -38,6 +38,10 @@ AC_API_KEY           = os.getenv("AC_API_KEY", "")
 AC_BASE_URL          = os.getenv("AC_BASE_URL", "https://77inc59539.api-us1.com")
 AC_LIST_ID           = "3"  # Master Contact List
 
+STRIPE_WEBHOOK_SECRET   = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_SINGLE_PRODUCT   = "prod_UIWRfDQkvF5eui"   # $77 Single Report
+STRIPE_UNLIMITED_PRODUCT = "prod_UI8EeNoC48yHJw"  # $200 Unlimited Pro
+
 MODEL                = "claude-opus-4-5"
 EMBED_MODEL          = "voyage-large-2"  # 1536-dim, matches DB and load_obc.py
 OBC_MATCH_COUNT      = 25
@@ -831,6 +835,94 @@ async def start_trial_endpoint(request: Request):
         print(f"[AC] trial tagging failed silently: {e}")
 
     return info
+
+
+@app.post("/stripe-webhook")
+async def stripe_webhook(request: Request):
+    """
+    Receives Stripe checkout.session.completed events.
+    Tags the customer in ActiveCampaign based on which product they bought,
+    which triggers the correct AC automation and exits the trial sequence.
+    """
+    import hmac
+    import hashlib
+
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    # ── Verify signature (skip if no secret configured — useful for testing) ──
+    if STRIPE_WEBHOOK_SECRET:
+        try:
+            # Stripe signature format: t=<ts>,v1=<sig>
+            parts = {k: v for k, v in (p.split("=", 1) for p in sig_header.split(",") if "=" in p)}
+            timestamp = parts.get("t", "")
+            expected_sig = parts.get("v1", "")
+            signed_payload = f"{timestamp}.{payload.decode()}"
+            computed = hmac.new(
+                STRIPE_WEBHOOK_SECRET.encode(),
+                signed_payload.encode(),
+                hashlib.sha256,
+            ).hexdigest()  # type: ignore[attr-defined]
+            if not hmac.compare_digest(computed, expected_sig):
+                raise HTTPException(status_code=400, detail="Invalid Stripe signature")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Signature error: {e}")
+
+    try:
+        event = json.loads(payload)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    event_type = event.get("type", "")
+
+    # ── Only handle completed checkouts ───────────────────────────────────────
+    if event_type != "checkout.session.completed":
+        return {"received": True}
+
+    session = event.get("data", {}).get("object", {})
+    email   = (session.get("customer_details") or {}).get("email", "")
+    name    = (session.get("customer_details") or {}).get("name", "") or ""
+    first_name = name.split()[0] if name else (email.split("@")[0] if email else "")
+
+    # Resolve product ID from line items embedded in the session metadata,
+    # or fall back to the metadata field set at checkout creation time.
+    product_id = (
+        session.get("metadata", {}).get("product_id")          # set by Lovable at checkout
+        or session.get("metadata", {}).get("stripe_product")
+        or ""
+    )
+
+    # If metadata isn't set, pull from the first line item (works for one-time payments)
+    if not product_id:
+        items = (session.get("display_items") or
+                 session.get("line_items", {}).get("data", []))
+        if items:
+            price = items[0].get("price") or items[0].get("plan") or {}
+            product_id = price.get("product", "")
+
+    print(f"[Stripe] checkout.session.completed — email={email} product={product_id}")
+
+    if not email:
+        return {"received": True}
+
+    if product_id == STRIPE_SINGLE_PRODUCT:
+        try:
+            _ac_tag_contact(email, first_name, "purchased_single")
+        except Exception as e:
+            print(f"[AC] purchased_single tagging failed: {e}")
+
+    elif product_id == STRIPE_UNLIMITED_PRODUCT:
+        try:
+            _ac_tag_contact(email, first_name, "upgraded_unlimited")
+        except Exception as e:
+            print(f"[AC] upgraded_unlimited tagging failed: {e}")
+
+    else:
+        print(f"[Stripe] Unknown product_id: {product_id} — no AC tag applied")
+
+    return {"received": True}
 
 
 @app.post("/analyze")
