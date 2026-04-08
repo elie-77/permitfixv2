@@ -34,6 +34,9 @@ SUPABASE_URL         = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 SUPABASE_ANON_KEY    = os.getenv("SUPABASE_ANON_KEY", "")
 VOYAGE_API_KEY       = os.getenv("VOYAGE_API_KEY", "")
+AC_API_KEY           = os.getenv("AC_API_KEY", "")
+AC_BASE_URL          = os.getenv("AC_BASE_URL", "https://77inc59539.api-us1.com")
+AC_LIST_ID           = "3"  # Master Contact List
 
 MODEL                = "claude-opus-4-5"
 EMBED_MODEL          = "voyage-large-2"  # 1536-dim, matches DB and load_obc.py
@@ -44,6 +47,85 @@ sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 ac = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 ac_async = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 vo = voyageai.Client(api_key=VOYAGE_API_KEY) if VOYAGE_API_KEY else None
+
+# ── ActiveCampaign helpers ────────────────────────────────────────────────────
+
+import urllib.request
+import urllib.parse
+
+def _ac_tag_contact(email: str, first_name: str, tag: str) -> None:
+    """Create/update a contact in ActiveCampaign and apply a tag. Fire-and-forget."""
+    if not AC_API_KEY or not email:
+        return
+    headers = {
+        "Api-Token": AC_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+    def _post(url: str, body: dict):
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return json.loads(r.read())
+        except Exception as e:
+            print(f"[AC] {url} failed: {e}")
+            return {}
+
+    def _get_json(url: str):
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return json.loads(r.read())
+        except Exception as e:
+            print(f"[AC] GET {url} failed: {e}")
+            return {}
+
+    base = AC_BASE_URL.rstrip("/")
+
+    # 1. Upsert contact
+    result = _post(f"{base}/api/3/contact/sync", {
+        "contact": {
+            "email": email,
+            "firstName": first_name,
+            "fieldValues": [],
+        }
+    })
+    contact_id = (result.get("contact") or {}).get("id")
+    if not contact_id:
+        print(f"[AC] Could not upsert contact for {email}")
+        return
+
+    # 2. Add to list
+    _post(f"{base}/api/3/contactLists", {
+        "contactList": {
+            "list": AC_LIST_ID,
+            "contact": contact_id,
+            "status": "1",
+        }
+    })
+
+    # 3. Find or create tag
+    tags_resp = _get_json(f"{base}/api/3/tags?search={urllib.parse.quote(tag)}")
+    tag_id = None
+    for t in (tags_resp.get("tags") or []):
+        if t.get("tag") == tag:
+            tag_id = t["id"]
+            break
+    if not tag_id:
+        tag_result = _post(f"{base}/api/3/tags", {"tag": {"tag": tag, "tagType": "contact"}})
+        tag_id = (tag_result.get("tag") or {}).get("id")
+
+    if not tag_id:
+        print(f"[AC] Could not find/create tag: {tag}")
+        return
+
+    # 4. Apply tag to contact
+    _post(f"{base}/api/3/contactTags", {
+        "contactTag": {"contact": contact_id, "tag": tag_id}
+    })
+    print(f"[AC] Tagged {email} with '{tag}'")
+
 
 IMAGE_TYPES    = {"jpg", "jpeg", "png", "webp", "gif"}
 MEDIA_TYPE_MAP = {
@@ -739,6 +821,15 @@ async def start_trial_endpoint(request: Request):
     if res.data and res.data[0].get("subscription_status") == "active":
         raise HTTPException(status_code=400, detail="User already has an active subscription.")
     info = start_trial(user["id"])
+
+    # Tag new trial users in ActiveCampaign (fire-and-forget, never blocks the response)
+    email      = user.get("email", "")
+    first_name = email.split("@")[0] if email else ""
+    try:
+        _ac_tag_contact(email, first_name, "trial_active")
+    except Exception as e:
+        print(f"[AC] trial tagging failed silently: {e}")
+
     return info
 
 
