@@ -335,10 +335,73 @@ _KNOWN_MUNICIPALITIES = [
     "Clarington", "Halton Hills", "Milton", "Caledon", "Orangeville",
 ]
 
+# Hamlet / neighbourhood → parent municipality
+# Covers cases where users enter a sub-municipality place name in their address
+def _resolve_hamlet(text: str) -> str:
+    """Check if text contains a known hamlet/neighbourhood name → return parent municipality."""
+    text_lower = text.lower()
+    for hamlet, muni in _HAMLET_TO_MUNICIPALITY.items():
+        if hamlet in text_lower:
+            return muni
+    return ""
+
+
+_HAMLET_TO_MUNICIPALITY = {
+    # East Gwillimbury hamlets
+    "mount albert":      "East Gwillimbury",
+    "holland landing":   "East Gwillimbury",
+    "sharon":            "East Gwillimbury",
+    "queensville":       "East Gwillimbury",
+    "green lane":        "East Gwillimbury",
+    # Georgina hamlets
+    "keswick":           "Georgina",
+    "sutton":            "Georgina",
+    "jackson's point":   "Georgina",
+    "pefferlaw":         "Georgina",
+    "roches point":      "Georgina",
+    # Uxbridge hamlets
+    "port perry":        "Uxbridge",
+    "goodwood":          "Uxbridge",
+    "sandford":          "Uxbridge",
+    # Vaughan communities
+    "woodbridge":        "Vaughan",
+    "maple":             "Vaughan",
+    "kleinburg":         "Vaughan",
+    "concord":           "Vaughan",
+    "thornhill":         "Vaughan",
+    # Markham communities
+    "unionville":        "Markham",
+    "milliken":          "Markham",
+    "cornell":           "Markham",
+    "angus glen":        "Markham",
+    # Brampton communities
+    "bramalea":          "Brampton",
+    "heart lake":        "Brampton",
+    # Mississauga communities
+    "streetsville":      "Mississauga",
+    "port credit":       "Mississauga",
+    "clarkson":          "Mississauga",
+    "malton":            "Mississauga",
+    "lorne park":        "Mississauga",
+    # Hamilton communities
+    "ancaster":          "Hamilton",
+    "dundas":            "Hamilton",
+    "flamborough":       "Hamilton",
+    "stoney creek":      "Hamilton",
+    "binbrook":          "Hamilton",
+    # Kitchener/Waterloo area
+    "hespeler":          "Kitchener",
+    "preston":           "Kitchener",
+    # Windsor area
+    "riverside":         "Windsor",
+    "sandwich":          "Windsor",
+}
+
 def extract_municipality(doc_texts: list[dict]) -> str:
     """
     Scan uploaded docs + filenames for an Ontario municipality name.
     Checks common permit form fields first, then address patterns, then bare name.
+    Also resolves hamlet/neighbourhood names to their parent municipality.
     Returns the matched municipality name or "" if not found.
     """
     import re
@@ -401,6 +464,12 @@ def extract_municipality(doc_texts: list[dict]) -> str:
         pattern = r'\b' + re.escape(muni) + r'\b'
         if re.search(pattern, sample, re.IGNORECASE):
             return muni
+
+    # 7. Hamlet/neighbourhood lookup — catches "Mount Albert", "Woodbridge", etc.
+    hamlet_hit = _resolve_hamlet(all_filenames + " " + sample)
+    if hamlet_hit:
+        print(f"Municipality resolved via hamlet lookup: {hamlet_hit}")
+        return hamlet_hit
 
     return ""
 
@@ -1041,6 +1110,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
             early_municipality = (
                 _resolved_municipality
                 or extract_municipality([{"text": req.message}])
+                or _resolve_hamlet(req.message)
             )
             if early_municipality:
                 print(f"Municipality (early): {early_municipality}")
