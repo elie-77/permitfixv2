@@ -818,6 +818,20 @@ async def health():
     return {"status": "ok", "service": "permitfix-api"}
 
 
+@app.get("/llms.txt", response_class=Response)
+async def llms_txt():
+    with open("llms.txt", "r") as f:
+        content = f.read()
+    return Response(content=content, media_type="text/plain; charset=utf-8")
+
+
+@app.get("/llms-full.txt", response_class=Response)
+async def llms_full_txt():
+    with open("llms-full.txt", "r") as f:
+        content = f.read()
+    return Response(content=content, media_type="text/plain; charset=utf-8")
+
+
 @app.get("/trial-status")
 async def trial_status_endpoint(request: Request):
     """Return trial info + access mode for the authenticated user."""

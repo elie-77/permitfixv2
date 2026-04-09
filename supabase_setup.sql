@@ -109,6 +109,15 @@ BEGIN
 END;
 $$;
 
+-- ── Helper: fast truncate for re-indexing ─────────────────────────────────────
+-- Called by load_obc.py --reload to wipe obc_sections quickly.
+CREATE OR REPLACE FUNCTION public.truncate_obc_sections()
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  TRUNCATE TABLE public.obc_sections RESTART IDENTITY;
+END;
+$$;
+
 -- ============================================================
 -- Pricing reference (for Stripe webhook / Lovable integration):
 --   $20 / submission  → plan_type = 'per_submission', increment submissions_remaining += 1

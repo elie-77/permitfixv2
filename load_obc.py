@@ -1,24 +1,33 @@
 """
-load_obc.py — Downloads OBC/municipality PDFs from Supabase Storage (or local
-knowledge_base/ folder), chunks them by section, embeds with Voyage AI, and
-loads into obc_sections.
+load_obc.py — Chunks, embeds, and loads bylaw/OBC PDFs into obc_sections.
+
+Two source modes:
+  --local   Read from LOCAL directories (knowledge_base/ + municipality subfolders)
+  default   Download from Supabase Storage bucket
+
+Municipality-aware title prefixing:
+  Any PDF inside a subfolder named after a municipality automatically gets
+  prefixed: "Hamilton — zoningby-law05-200-section10-1-c1zone-oct2025.pdf"
+  This ensures the title-based semantic search finds the right bylaw.
 
 Usage:
-    # Load from Supabase Storage (default):
+    # Index from Supabase Storage bucket root:
     python load_obc.py
 
-    # Load from local knowledge_base/ folder:
+    # Index from local knowledge_base/ + MUNICIPALITY_REGISTRY_DIR subfolders:
     python load_obc.py --local
 
-    # Delete all existing OBC entries first, then reload:
-    python load_obc.py --reload
+    # Wipe obc_sections and rebuild everything:
     python load_obc.py --reload --local
+    python load_obc.py --reload
 
-Set these env vars (or add to .env):
+Set in .env:
     SUPABASE_URL
-    SUPABASE_SERVICE_KEY   ← service role key, not anon (needed to list bucket)
-    VOYAGE_API_KEY         ← free at voyageai.com, no credit card needed
-    BUCKET_FOLDER          ← subfolder inside permit-files, e.g. "obc" or "" for root
+    SUPABASE_SERVICE_KEY        ← service role key
+    VOYAGE_API_KEY
+    BUCKET_FOLDER               ← subfolder in permit-files bucket (or "" for root)
+    MUNICIPALITY_REGISTRY_DIR   ← local path containing municipality subfolders
+                                   e.g. /Users/you/docs/municipality-registry
 """
 
 import os
@@ -34,40 +43,76 @@ from supabase import create_client
 
 load_dotenv()
 
-SUPABASE_URL         = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-VOYAGE_API_KEY       = os.getenv("VOYAGE_API_KEY", "")
-BUCKET               = "permit-files"
-BUCKET_FOLDER        = os.getenv("BUCKET_FOLDER", "")   # e.g. "obc" or "" for root
-EMBED_MODEL          = "voyage-large-2"                  # 1536 dims — matches our schema
-CHUNK_SIZE           = 500    # words per chunk
-CHUNK_OVERLAP        = 50     # words overlap between chunks
-BATCH_SIZE           = 8      # Voyage AI max per batch
-LOCAL_KB_DIR         = Path(__file__).parent / "knowledge_base"
+SUPABASE_URL              = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_KEY      = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+VOYAGE_API_KEY            = os.getenv("VOYAGE_API_KEY", "")
+BUCKET                    = "permit-files"
+BUCKET_FOLDER             = os.getenv("BUCKET_FOLDER", "")
+MUNICIPALITY_REGISTRY_DIR = os.getenv("MUNICIPALITY_REGISTRY_DIR", "")
+EMBED_MODEL               = "voyage-large-2"   # 1536 dims — matches DB schema
+CHUNK_SIZE                = 500                # words per chunk
+CHUNK_OVERLAP             = 50                 # words overlap between chunks
+BATCH_SIZE                = 8                  # Voyage AI max per batch
+LOCAL_KB_DIR              = Path(__file__).parent / "knowledge_base"
 
 sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 vo = voyageai.Client(api_key=VOYAGE_API_KEY)
 
 
-# ── Doc type detection (same rules as load_municipality_docs.py) ───────────────
+# ── Municipality name normalisation ───────────────────────────────────────────
+# Maps lowercase folder names → display name used in the title prefix
+MUNICIPALITY_DISPLAY = {
+    "brampton":    "Brampton",
+    "hamilton":    "Hamilton",
+    "kitchener":   "Kitchener",
+    "london":      "London",
+    "markham":     "Markham",
+    "mississauga": "Mississauga",
+    "ottawa":      "Ottawa",
+    "toronto":     "Toronto",
+    "vaughan":     "Vaughan",
+    "windsor":     "Windsor",
+    # Add more as needed — folder name (lowercase) → display name
+    "newmarket":       "Newmarket",
+    "east gwillimbury": "East Gwillimbury",
+    "georgina":        "Georgina",
+    "uxbridge":        "Uxbridge",
+    "aurora":          "Aurora",
+    "richmond hill":   "Richmond Hill",
+    "oakville":        "Oakville",
+    "burlington":      "Burlington",
+    "barrie":          "Barrie",
+    "kingston":        "Kingston",
+    "guelph":          "Guelph",
+    "niagara falls":   "Niagara Falls",
+    "sudbury":         "Sudbury",
+}
+
+def display_name(folder_name: str) -> str:
+    """Return the display name for a municipality folder."""
+    key = folder_name.strip().lower()
+    return MUNICIPALITY_DISPLAY.get(key, folder_name.title())
+
+
+# ── Doc type detection ─────────────────────────────────────────────────────────
 DOC_TYPE_RULES = [
-    ("ontario building code",    "obc"),
-    ("ontario fire code",        "obc"),
-    ("tacboc",                   "obc"),
+    ("ontario building code",          "obc"),
+    ("ontario fire code",              "obc"),
+    ("tacboc",                         "obc"),
     ("building permit application form", "permit_guide"),
-    ("permit application guide", "permit_guide"),
-    ("sample building permit",   "permit_guide"),
-    ("consolidated",             "consolidated_bylaw"),
-    ("amendment summary",        "amendment_index"),
-    ("amendment index",          "amendment_index"),
-    ("appeal index",             "appeal_index"),
-    ("appeal decision",          "olt_appeal"),
-    ("olt appeal",               "olt_appeal"),
-    ("omb appeal",               "olt_appeal"),
-    ("amendment",                "amendment"),
-    ("permit guide",             "permit_guide"),
-    ("application guide",        "permit_guide"),
-    ("zoning maps",              "other"),
+    ("permit application guide",       "permit_guide"),
+    ("sample building permit",         "permit_guide"),
+    ("consolidated",                   "consolidated_bylaw"),
+    ("amendment summary",              "amendment_index"),
+    ("amendment index",                "amendment_index"),
+    ("appeal index",                   "appeal_index"),
+    ("appeal decision",                "olt_appeal"),
+    ("olt appeal",                     "olt_appeal"),
+    ("omb appeal",                     "olt_appeal"),
+    ("amendment",                      "amendment"),
+    ("permit guide",                   "permit_guide"),
+    ("application guide",              "permit_guide"),
+    ("zoning maps",                    "other"),
 ]
 
 def detect_doc_type(filename: str) -> str:
@@ -78,63 +123,89 @@ def detect_doc_type(filename: str) -> str:
     return "base_bylaw"
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Text + table extraction ────────────────────────────────────────────────────
 
-def list_pdfs_from_storage() -> list:
-    """Return all PDF paths inside the bucket folder."""
-    prefix = (BUCKET_FOLDER.rstrip("/") + "/") if BUCKET_FOLDER else ""
-    res    = sb.storage.from_(BUCKET).list(BUCKET_FOLDER or "")
-    paths  = []
-    for item in res:
-        name = item["name"]
-        if name.lower().endswith(".pdf"):
-            paths.append(prefix + name)
-    print(f"Found {len(paths)} PDFs in bucket/{BUCKET_FOLDER or 'root'}")
-    return paths
-
-
-def list_pdfs_from_local() -> list:
-    """Return all PDF paths in local knowledge_base/ folder."""
-    if not LOCAL_KB_DIR.exists():
-        print(f"ERROR: {LOCAL_KB_DIR} does not exist")
-        return []
-    paths = list(LOCAL_KB_DIR.glob("*.pdf")) + list(LOCAL_KB_DIR.glob("*.PDF"))
-    print(f"Found {len(paths)} PDFs in {LOCAL_KB_DIR}")
-    return paths
-
-
-def download_pdf(path: str) -> bytes:
-    return sb.storage.from_(BUCKET).download(path)
-
+MAX_PAGES = 9999   # no page cap for indexing — we want everything
 
 def extract_text(pdf_bytes: bytes) -> str:
-    """Extract all text from a PDF."""
-    text = []
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for page in pdf.pages:
-            t = page.extract_text()
-            if t:
-                text.append(t)
-    return "\n".join(text)
+    """
+    Extract text AND tables from a PDF.
+    Uses PyMuPDF for prose text, pdfplumber for structured tables.
+    Tables are appended as pipe-separated rows so zone schedules
+    (setbacks, lot coverage, parking rates) are captured correctly.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        fitz = None
 
+    pages = []
+
+    # ── Prose text via PyMuPDF (better than pdfplumber for most text) ─────────
+    if fitz:
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            for i in range(len(doc)):
+                try:
+                    text = doc[i].get_text()
+                    if text and text.strip():
+                        pages.append(text.strip())
+                except Exception:
+                    pass
+            doc.close()
+        except Exception:
+            pass
+
+    # ── Fallback / table extraction via pdfplumber ────────────────────────────
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            # If PyMuPDF failed, extract prose here too
+            if not fitz or not pages:
+                for page in pdf.pages:
+                    t = page.extract_text()
+                    if t:
+                        pages.append(t.strip())
+
+            # Always extract tables separately — these hold zone schedule data
+            table_blocks = []
+            for i, page in enumerate(pdf.pages):
+                tables = page.extract_tables()
+                for table in tables:
+                    if not table:
+                        continue
+                    rows = []
+                    for row in table:
+                        cleaned = [str(cell).strip() if cell else "" for cell in row]
+                        # Skip rows that are entirely empty
+                        if any(c for c in cleaned):
+                            rows.append(" | ".join(cleaned))
+                    if rows:
+                        block = f"[Table — page {i + 1}]\n" + "\n".join(rows)
+                        table_blocks.append(block)
+            if table_blocks:
+                pages.append("\n\n--- EXTRACTED TABLES ---\n" + "\n\n".join(table_blocks))
+    except Exception:
+        pass
+
+    return "\n\n".join(pages)
+
+
+# ── Chunking ──────────────────────────────────────────────────────────────────
 
 def detect_section(line: str):
-    """Return a section number if the line looks like an OBC section header."""
     m = re.match(
         r"^(Part\s+\d+|Division\s+[A-C]|Section\s+\d+|"
         r"\d+\.\d+(\.\d+)*\.?\s+[A-Z])",
         line.strip()
     )
-    if m:
-        return m.group(0).strip()
-    return None
+    return m.group(0).strip() if m else None
 
 
-def chunk_text(text: str, filename: str) -> list:
+def chunk_text(text: str, title: str) -> list:
     words       = text.split()
     chunks      = []
     start       = 0
-    current_sec = filename
+    current_sec = title
 
     lines    = text.splitlines()
     sec_map  = {}
@@ -154,7 +225,7 @@ def chunk_text(text: str, filename: str) -> list:
                 break
         chunks.append({
             "section_number": current_sec,
-            "title":          filename,
+            "title":          title,
             "content":        chunk,
         })
         start += CHUNK_SIZE - CHUNK_OVERLAP
@@ -162,8 +233,9 @@ def chunk_text(text: str, filename: str) -> list:
     return chunks
 
 
+# ── Embedding ─────────────────────────────────────────────────────────────────
+
 def embed_batch(texts: list) -> list:
-    """Embed a batch of strings with Voyage AI, retry on rate limit."""
     for attempt in range(3):
         try:
             res = vo.embed(texts, model=EMBED_MODEL, input_type="document")
@@ -176,60 +248,35 @@ def embed_batch(texts: list) -> list:
                 raise
 
 
-def already_loaded(filename: str) -> bool:
-    """Skip files already in the DB (based on title match)."""
-    res = sb.table("obc_sections").select("id").eq("title", filename).limit(1).execute()
+# ── Supabase helpers ──────────────────────────────────────────────────────────
+
+def already_loaded(title: str) -> bool:
+    res = sb.table("obc_sections").select("id").eq("title", title).limit(1).execute()
     return len(res.data) > 0
 
 
-# Old filenames that were renamed — delete these so they can be re-embedded with new names
-OLD_FILENAMES = [
-    "2024-OBC.Volume-1.January-16-2025.pdf",
-    "2026 Fire Code.pdf",
-    "301881.pdf",
-    "EG Building-Permit-Application-Guide.pdf",
-    "EG Zoning-By-law-Maps-2018-043-Oct-2020.pdf",
-    "East Gwillumbury Zoning-By-law-2018-043-Apr-2025.pdf",
-    "Georgina Zoning By-law No. 600 (November 2023) Modified as Approved.pdf",
-    "Newmarket Zoning By-law 2010-40 Consolidated 2022.pdf",
-    "Toronto City-Planning-Zoning-Zoning-By-law-Part-1.pdf",
-    "Toronto-City-Planning-Zoning-Zoning-By-law-Part-2.pdf",
-    "Toronto-City-Planning-Zoning-Zoning-By-law-Part-3.pdf",
-    "UXBRIDGE Zoning-By-law.pdf",
-    "mmah-building-development-application-for-a-permit-to-construct-or-demolish-2014-en-2021-11-01.pdf",
-    "tacboc_details_2012.pdf",
-    # Also purge new names so they get re-embedded with doc_type set
-    "Ontario Building Code 2024 Volume 1.pdf",
-    "Ontario Fire Code 2026.pdf",
-    "Vaughan OLT Appeal 301881.pdf",
-    "East Gwillimbury Permit Application Guide.pdf",
-    "East Gwillimbury Zoning Maps 2018-043.pdf",
-    "East Gwillimbury Consolidated Bylaw 2018-043 Apr 2025.pdf",
-    "Georgina Consolidated Bylaw 600 Nov 2023.pdf",
-    "Newmarket Consolidated Bylaw 2010-40 2022.pdf",
-    "Toronto Consolidated Bylaw 569-2013 Part 1.pdf",
-    "Toronto Consolidated Bylaw 569-2013 Part 2.pdf",
-    "Toronto Consolidated Bylaw 569-2013 Part 3.pdf",
-    "Uxbridge Base Bylaw.pdf",
-    "Ontario Building Permit Application Form MMAH 2021.pdf",
-    "Ontario TACBOC Building Code Details 2012.pdf",
-    "Sample Building Permit Package Drawings.pdf",
-    "Vaughan Amendment Index 2024.pdf",
-    "Vaughan Appeal Index OLT.pdf",
-    "Vaughan Base Bylaw 1-88.pdf",
-]
-
-def delete_obc_entries():
-    """Delete obc_sections rows for all known OBC filenames (old and new names)."""
-    print("Deleting existing OBC entries by filename...")
+def delete_all_entries():
+    """Wipe the entire obc_sections table before a full reload."""
+    print("Deleting all existing obc_sections rows...")
+    try:
+        # Fast path: call a TRUNCATE RPC if it exists in Supabase
+        sb.rpc("truncate_obc_sections", {}).execute()
+        print("  Table cleared via TRUNCATE.")
+        return
+    except Exception:
+        pass
+    # Fallback: delete in small batches with a pause to avoid statement timeout
     total = 0
-    for fname in OLD_FILENAMES:
-        res = sb.table("obc_sections").delete().eq("title", fname).execute()
-        count = len(res.data)
-        if count:
-            print(f"  Deleted {count} rows for: {fname}")
-            total += count
-    print(f"  Total deleted: {total} rows")
+    while True:
+        res = sb.table("obc_sections").select("id").limit(200).execute()
+        if not res.data:
+            break
+        ids = [r["id"] for r in res.data]
+        sb.table("obc_sections").delete().in_("id", ids).execute()
+        total += len(ids)
+        print(f"  Deleted {total} rows...")
+        time.sleep(0.3)
+    print("  Table cleared.")
 
 
 def upsert_chunks(chunks: list, embeddings: list, doc_type: str):
@@ -247,17 +294,122 @@ def upsert_chunks(chunks: list, embeddings: list, doc_type: str):
         sb.table("obc_sections").insert(rows).execute()
     except Exception as e:
         if "doc_type" in str(e):
-            # doc_type column not yet added — insert without it
-            rows_slim = [
-                {k: v for k, v in row.items() if k != "doc_type"}
-                for row in rows
-            ]
+            rows_slim = [{k: v for k, v in r.items() if k != "doc_type"} for r in rows]
             sb.table("obc_sections").insert(rows_slim).execute()
         else:
             raise
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+# ── Storage helpers ───────────────────────────────────────────────────────────
+
+def list_pdfs_from_storage() -> list:
+    prefix = (BUCKET_FOLDER.rstrip("/") + "/") if BUCKET_FOLDER else ""
+    res    = sb.storage.from_(BUCKET).list(BUCKET_FOLDER or "")
+    paths  = []
+    for item in res:
+        name = item["name"]
+        if name.lower().endswith(".pdf"):
+            paths.append(prefix + name)
+    print(f"Found {len(paths)} PDFs in bucket/{BUCKET_FOLDER or 'root'}")
+    return paths
+
+
+def download_pdf(path: str) -> bytes:
+    return sb.storage.from_(BUCKET).download(path)
+
+
+# ── Local file helpers ────────────────────────────────────────────────────────
+
+def list_pdfs_from_local() -> list[tuple[Path, str]]:
+    """
+    Returns list of (file_path, display_title) tuples.
+    display_title = "{Municipality} — {filename}" for municipality subfolders,
+                    just "{filename}" for knowledge_base/ root files.
+    """
+    results = []
+
+    # 1. knowledge_base/ root — OBC, fire code, provincial docs (no municipality prefix)
+    if LOCAL_KB_DIR.exists():
+        for f in sorted(LOCAL_KB_DIR.glob("*.pdf")):
+            results.append((f, f.name))
+        print(f"knowledge_base/: {len([r for r in results])} files")
+
+    # 2. Municipality registry directory — one subfolder per municipality
+    if MUNICIPALITY_REGISTRY_DIR:
+        reg_dir = Path(MUNICIPALITY_REGISTRY_DIR)
+        if not reg_dir.exists():
+            print(f"WARNING: MUNICIPALITY_REGISTRY_DIR not found: {reg_dir}")
+        else:
+            # Root-level PDFs in the registry dir (e.g. Uxbridge Base Bylaw.pdf)
+            root_pdfs = sorted(list(reg_dir.glob("*.pdf")) + list(reg_dir.glob("*.PDF")))
+            for f in root_pdfs:
+                results.append((f, f.name))
+            if root_pdfs:
+                print(f"  (registry root): {len(root_pdfs)} files")
+
+            muni_count = 0
+            for subfolder in sorted(reg_dir.iterdir()):
+                if not subfolder.is_dir():
+                    continue
+                muni = display_name(subfolder.name)
+                pdfs = sorted(list(subfolder.glob("*.pdf")) + list(subfolder.glob("*.PDF")))
+                if pdfs:
+                    print(f"  {muni}: {len(pdfs)} files")
+                    muni_count += len(pdfs)
+                for f in pdfs:
+                    title = f"{muni} — {f.name}"
+                    results.append((f, title))
+            print(f"Municipality registry: {muni_count} files across {sum(1 for s in reg_dir.iterdir() if s.is_dir())} municipalities")
+    else:
+        # Fall back: check if knowledge_base/ itself has municipality subfolders
+        if LOCAL_KB_DIR.exists():
+            for subfolder in sorted(LOCAL_KB_DIR.iterdir()):
+                if not subfolder.is_dir():
+                    continue
+                muni = display_name(subfolder.name)
+                pdfs = sorted(list(subfolder.glob("*.pdf")) + list(subfolder.glob("*.PDF")))
+                if pdfs:
+                    print(f"  {muni}: {len(pdfs)} files")
+                for f in pdfs:
+                    title = f"{muni} — {f.name}"
+                    results.append((f, title))
+
+    return results
+
+
+# ── Process one file ──────────────────────────────────────────────────────────
+
+def process_file(pdf_bytes: bytes, title: str, do_reload: bool):
+    """Chunk, embed, and upsert one PDF. Returns number of chunks inserted."""
+    if not do_reload and already_loaded(title):
+        print(f"   Already loaded — skipping")
+        return 0
+
+    print(f"   Extracting text + tables...")
+    text = extract_text(pdf_bytes)
+    if not text.strip():
+        print(f"   No extractable text — skipping")
+        return 0
+
+    doc_type = detect_doc_type(title)
+    print(f"   Doc type: {doc_type}")
+
+    chunks = chunk_text(text, title)
+    print(f"   {len(chunks)} chunks")
+
+    print(f"   Embedding + uploading...")
+    for i in range(0, len(chunks), BATCH_SIZE):
+        batch      = chunks[i: i + BATCH_SIZE]
+        texts      = [c["content"] for c in batch]
+        embeddings = embed_batch(texts)
+        upsert_chunks(batch, embeddings, doc_type)
+        print(f"   {min(i + BATCH_SIZE, len(chunks))}/{len(chunks)}")
+        time.sleep(0.5)
+
+    return len(chunks)
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     if not SUPABASE_SERVICE_KEY:
@@ -271,85 +423,54 @@ def main():
     do_reload = "--reload" in sys.argv
 
     if do_reload:
-        delete_obc_entries()
+        delete_all_entries()
+
+    total_chunks = 0
 
     if use_local:
-        pdf_paths = list_pdfs_from_local()
-        if not pdf_paths:
+        file_list = list_pdfs_from_local()
+        if not file_list:
+            print("No PDFs found. Check LOCAL_KB_DIR and MUNICIPALITY_REGISTRY_DIR.")
             return
-        for file_path in sorted(pdf_paths):
-            filename = file_path.name
-            print(f"\n── {filename}")
+        print(f"\nTotal files to process: {len(file_list)}\n")
+        for file_path, title in file_list:
+            print(f"\n── {title}")
+            try:
+                pdf_bytes = file_path.read_bytes()
+                n = process_file(pdf_bytes, title, do_reload)
+                total_chunks += n
+                if n:
+                    print(f"   Done. ({n} chunks)")
+            except Exception as e:
+                print(f"   ERROR: {e}")
 
-            if not do_reload and already_loaded(filename):
-                print(f"   Already loaded — skipping")
-                continue
-
-            print(f"   Reading...")
-            pdf_bytes = file_path.read_bytes()
-            print(f"   Extracting text...")
-            text = extract_text(pdf_bytes)
-            if not text.strip():
-                print(f"   No extractable text — skipping")
-                continue
-
-            doc_type = detect_doc_type(filename)
-            print(f"   Doc type: {doc_type}")
-            print(f"   Chunking...")
-            chunks = chunk_text(text, filename)
-            print(f"   {len(chunks)} chunks")
-
-            print(f"   Embedding + uploading...")
-            for i in range(0, len(chunks), BATCH_SIZE):
-                batch      = chunks[i : i + BATCH_SIZE]
-                texts      = [c["content"] for c in batch]
-                embeddings = embed_batch(texts)
-                upsert_chunks(batch, embeddings, doc_type)
-                print(f"   {min(i + BATCH_SIZE, len(chunks))}/{len(chunks)}")
-                time.sleep(0.5)
-
-            print(f"   Done.")
     else:
         pdf_paths = list_pdfs_from_storage()
         if not pdf_paths:
             print("No PDFs found. Check BUCKET_FOLDER in your .env")
             return
-
         for path in pdf_paths:
             filename = path.split("/")[-1]
-            print(f"\n── {filename}")
+            # Detect municipality from bucket subfolder if present
+            parts = path.split("/")
+            if len(parts) >= 2:
+                folder = parts[-2]
+                muni   = display_name(folder) if folder.lower() in MUNICIPALITY_DISPLAY else ""
+                title  = f"{muni} — {filename}" if muni else filename
+            else:
+                title = filename
 
-            if not do_reload and already_loaded(filename):
-                print(f"   Already loaded — skipping")
-                continue
+            print(f"\n── {title}")
+            try:
+                pdf_bytes = download_pdf(path)
+                n = process_file(pdf_bytes, title, do_reload)
+                total_chunks += n
+                if n:
+                    print(f"   Done. ({n} chunks)")
+            except Exception as e:
+                print(f"   ERROR: {e}")
 
-            print(f"   Downloading...")
-            pdf_bytes = download_pdf(path)
-
-            print(f"   Extracting text...")
-            text = extract_text(pdf_bytes)
-            if not text.strip():
-                print(f"   No extractable text — skipping")
-                continue
-
-            doc_type = detect_doc_type(filename)
-            print(f"   Doc type: {doc_type}")
-            print(f"   Chunking...")
-            chunks = chunk_text(text, filename)
-            print(f"   {len(chunks)} chunks")
-
-            print(f"   Embedding + uploading...")
-            for i in range(0, len(chunks), BATCH_SIZE):
-                batch      = chunks[i : i + BATCH_SIZE]
-                texts      = [c["content"] for c in batch]
-                embeddings = embed_batch(texts)
-                upsert_chunks(batch, embeddings, doc_type)
-                print(f"   {min(i + BATCH_SIZE, len(chunks))}/{len(chunks)}")
-                time.sleep(0.5)
-
-            print(f"   Done.")
-
-    print("\n\nAll files loaded. obc_sections is ready.")
+    print(f"\n\nAll done. {total_chunks} total chunks inserted into obc_sections.")
 
 
 if __name__ == "__main__":
