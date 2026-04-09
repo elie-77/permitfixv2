@@ -989,9 +989,15 @@ async def analyze(req: AnalyzeRequest, request: Request):
                 yield f"data: {json.dumps({'trial_mode': True})}\n\n"
 
             # ── 2. Kick off OBC search in background thread immediately ───────
-            # It only needs req.message, so it can run while we download files.
+            # Try to detect municipality from the message before kicking off search.
+            # Docs aren't loaded yet, but the user's message often contains the address.
+            early_municipality = req.municipality or extract_municipality([{"text": req.message}])
+            if early_municipality:
+                print(f"Municipality (early): {early_municipality}")
+            else:
+                print(f"Municipality: not detected early — will retry after doc load")
             loop = asyncio.get_event_loop()
-            obc_future = loop.run_in_executor(None, search_obc, req.message, req.municipality)
+            obc_future = loop.run_in_executor(None, search_obc, req.message, early_municipality)
 
             # ── 3. Download and process files (parallel) ──────────────────────
             yield f"data: {json.dumps({'status': 'Reading uploaded documents...'})}\n\n"
@@ -1052,12 +1058,14 @@ async def analyze(req: AnalyzeRequest, request: Request):
                 await asyncio.gather(*tasks)
 
             # ── 4. Auto-detect municipality from uploaded docs ────────────────
-            detected_municipality = req.municipality  # use explicit value if provided
+            detected_municipality = early_municipality  # may already be set from message
             if not detected_municipality and doc_texts:
                 detected_municipality = extract_municipality(doc_texts)
                 if detected_municipality:
-                    print(f"Auto-detected municipality: {detected_municipality}")
+                    print(f"Municipality (from docs): {detected_municipality}")
                     yield f"data: {json.dumps({'status': f'Detected municipality: {detected_municipality}...'})}\n\n"
+            if not detected_municipality:
+                print(f"Municipality: not detected from message or docs")
 
             # ── 5. Collect OBC results (likely already done) ──────────────────
             yield f"data: {json.dumps({'status': 'Cross-referencing Ontario Building Code...'})}\n\n"
@@ -1070,7 +1078,7 @@ async def analyze(req: AnalyzeRequest, request: Request):
             # re-run with the detected municipality. search_obc() now runs two
             # separate queries (OBC-only + municipal-only) and combines them,
             # guaranteeing bylaw sections appear regardless of OBC similarity ranking.
-            if detected_municipality and detected_municipality != req.municipality:
+            if detected_municipality and detected_municipality != early_municipality:
                 try:
                     muni_query = (
                         f"{detected_municipality} zoning bylaw setbacks lot coverage "
