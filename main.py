@@ -1004,6 +1004,26 @@ async def analyze(req: AnalyzeRequest, request: Request):
           f"files={len(req.files or [])} storage={len(req.storage_paths or [])} "
           f"msg_len={len(req.message)}")
 
+    # If Lovable didn't send municipality, look it up from a previous analysis
+    # for this project — we save it there after every successful detection.
+    _resolved_municipality = req.municipality
+    if not _resolved_municipality and req.project_id:
+        try:
+            prev = (
+                sb.table("project_analyses")
+                .select("municipality")
+                .eq("project_id", req.project_id)
+                .not_.is_("municipality", "null")
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if prev.data and prev.data[0].get("municipality"):
+                _resolved_municipality = prev.data[0]["municipality"]
+                print(f"Municipality resolved from project history: {_resolved_municipality}")
+        except Exception as _e:
+            print(f"Municipality history lookup failed: {_e}")
+
     # Everything else runs inside generate() so we can emit status events
     # immediately and keep the perceived latency near zero.
     async def generate() -> AsyncGenerator[str, None]:
@@ -1017,9 +1037,11 @@ async def analyze(req: AnalyzeRequest, request: Request):
                 yield f"data: {json.dumps({'trial_mode': True})}\n\n"
 
             # ── 2. Kick off OBC search in background thread immediately ───────
-            # Try to detect municipality from the message before kicking off search.
-            # Docs aren't loaded yet, but the user's message often contains the address.
-            early_municipality = req.municipality or extract_municipality([{"text": req.message}])
+            # Priority: req.municipality → project history → message text → doc scan
+            early_municipality = (
+                _resolved_municipality
+                or extract_municipality([{"text": req.message}])
+            )
             if early_municipality:
                 print(f"Municipality (early): {early_municipality}")
             else:
