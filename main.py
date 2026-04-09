@@ -999,6 +999,11 @@ async def analyze(req: AnalyzeRequest, request: Request):
     _user_id    = user["id"]
     _project_id = req.project_id
 
+    # Log what the frontend sent so we can verify in Railway logs
+    print(f"[analyze] user={user['id'][:8]}… municipality='{req.municipality}' "
+          f"files={len(req.files or [])} storage={len(req.storage_paths or [])} "
+          f"msg_len={len(req.message)}")
+
     # Everything else runs inside generate() so we can emit status events
     # immediately and keep the perceived latency near zero.
     async def generate() -> AsyncGenerator[str, None]:
