@@ -337,21 +337,33 @@ _KNOWN_MUNICIPALITIES = [
 
 def extract_municipality(doc_texts: list[dict]) -> str:
     """
-    Scan the first ~3000 words of uploaded docs for an Ontario municipality name.
-    Checks common permit form fields first, then falls back to address pattern matching.
+    Scan uploaded docs + filenames for an Ontario municipality name.
+    Checks common permit form fields first, then address patterns, then bare name.
     Returns the matched municipality name or "" if not found.
     """
     import re
 
-    # Gather text from first few doc pages
-    sample = ""
-    for doc in doc_texts[:3]:
-        sample += doc.get("text", doc.get("content", "")) + "\n"
-        if len(sample) > 6000:
-            break
-    sample = sample[:6000]
+    # 1. Check filenames — sometimes files are named with the address/municipality
+    all_filenames = " ".join(
+        doc.get("filename", doc.get("name", "")) for doc in doc_texts
+    )
+    for muni in _KNOWN_MUNICIPALITIES:
+        pattern = r'\b' + re.escape(muni) + r'\b'
+        if re.search(pattern, all_filenames, re.IGNORECASE):
+            print(f"Municipality detected from filename: {muni}")
+            return muni
 
-    # 1. Explicit form field: "Municipality: Toronto" or "City/Town: Brampton"
+    # 2. Gather text from ALL doc pages (not just first 3) — CAD drawings
+    #    often have very little text so scanning more doesn't hurt performance
+    sample = ""
+    for doc in doc_texts:
+        sample += doc.get("text", doc.get("content", "")) + "\n"
+    sample = sample[:20000]  # up from 6000
+
+    if not sample.strip():
+        return ""
+
+    # 3. Explicit form field: "Municipality: Toronto" or "City/Town: Brampton"
     field_match = re.search(
         r"(?:municipality|city[/ ]*town|city|town|local\s+municipality)\s*[:/]\s*([A-Za-z .''-]{2,40})",
         sample, re.IGNORECASE
@@ -362,7 +374,7 @@ def extract_municipality(doc_texts: list[dict]) -> str:
             if muni.lower() in candidate.lower():
                 return muni
 
-    # 2. Address pattern: "123 Main St, Toronto, ON" or "Toronto, Ontario"
+    # 4. Address pattern: "123 Main St, Toronto, ON" or "Toronto, Ontario"
     addr_match = re.findall(
         r",\s*([A-Za-z .''-]{2,30}),?\s*(?:ON|Ontario)\b",
         sample, re.IGNORECASE
@@ -373,7 +385,18 @@ def extract_municipality(doc_texts: list[dict]) -> str:
             if muni.lower() in candidate.lower():
                 return muni
 
-    # 3. Bare name anywhere in text (lower confidence — only if clearly present)
+    # 5. "Town of X" / "City of X" / "Township of X" pattern
+    govt_match = re.findall(
+        r"(?:town|city|township|municipality)\s+of\s+([A-Za-z .''-]{2,30})",
+        sample, re.IGNORECASE
+    )
+    for candidate in govt_match:
+        candidate = candidate.strip()
+        for muni in _KNOWN_MUNICIPALITIES:
+            if muni.lower() in candidate.lower():
+                return muni
+
+    # 6. Bare name anywhere in text (lower confidence)
     for muni in _KNOWN_MUNICIPALITIES:
         pattern = r'\b' + re.escape(muni) + r'\b'
         if re.search(pattern, sample, re.IGNORECASE):
